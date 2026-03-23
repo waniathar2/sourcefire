@@ -13,10 +13,9 @@ const modelSelect    = document.getElementById('model-select');
 const chatMessages   = document.getElementById('chat-messages');
 const queryInput     = document.getElementById('query-input');
 const sendBtn        = document.getElementById('send-btn');
-const resizeHandle   = document.getElementById('resize-handle');
-const sourceViewer   = document.getElementById('source-viewer');
 const retrievalStats = document.getElementById('retrieval-stats');
-const splitPane      = document.querySelector('.split-pane');
+const sourceViewer   = document.getElementById('source-viewer');
+const resizeHandle   = document.getElementById('resize-handle');
 
 // ── Mode placeholders ────────────────────────────────────────
 const MODE_PLACEHOLDERS = {
@@ -155,6 +154,20 @@ function finalizeAssistantMessage(el, rawText) {
 var FILE_PATH_PATTERN = /\blib\/[\w/.\\-]+\.dart\b/g;
 
 function attachFileRefListeners(el) {
+  // 1. Intercept standard markdown links created with file://
+  el.querySelectorAll('a[href^="file://"]').forEach(function(a) {
+    var path = a.getAttribute('href').replace('file://', '');
+    if (path.startsWith('/')) {
+        path = path.substring(1);
+    }
+    a.classList.add('file-ref');
+    a.addEventListener('click', function(e) {
+      e.preventDefault();
+      loadSource(path);
+    });
+  });
+
+  // 2. Fallback: Parse plain text for unformatted file paths
   var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
     acceptNode: function (node) {
       var parent = node.parentElement;
@@ -194,7 +207,7 @@ function attachFileRefListeners(el) {
       a.dataset.path = match[0];
       a.textContent = match[0];
       a.href = '#';
-      a.title = 'View ' + match[0];
+      a.title = 'View source';
       (function (capturedPath) {
         a.addEventListener('click', function (e) {
           e.preventDefault();
@@ -211,89 +224,6 @@ function attachFileRefListeners(el) {
 
     textNode.parentNode.replaceChild(frag, textNode);
   }
-}
-
-// ── Source Viewer ────────────────────────────────────────────
-async function loadSource(path) {
-  sourceViewer.innerHTML = '<p class="source-viewer__placeholder">Loading...</p>';
-
-  try {
-    var response = await fetch('/api/sources?path=' + encodeURIComponent(path));
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-
-    var data = await response.json();
-    renderSource(path, data.content, data.language || 'dart');
-  } catch (err) {
-    sourceViewer.innerHTML =
-      '<p class="source-viewer__placeholder">Failed to load ' +
-      escapeHtml(path) + ': ' + escapeHtml(err.message) + '</p>';
-  }
-}
-
-function renderSource(path, content, language) {
-  var fileName = path.split('/').pop();
-
-  var fileEl = document.createElement('div');
-  fileEl.className = 'source-file';
-
-  var header = document.createElement('div');
-  header.className = 'source-file__header';
-
-  var nameEl = document.createElement('span');
-  nameEl.className = 'source-file__name';
-  nameEl.textContent = fileName;
-
-  var linesEl = document.createElement('span');
-  linesEl.className = 'source-file__lines';
-
-  header.appendChild(nameEl);
-  header.appendChild(linesEl);
-  fileEl.appendChild(header);
-
-  var highlightedHtml;
-  try {
-    var result = hljs.highlight(content, { language: language });
-    highlightedHtml = result.value;
-  } catch (hlErr) {
-    highlightedHtml = escapeHtml(content);
-  }
-
-  var linesContainer = formatLineNumbers(highlightedHtml);
-  var lineCount = linesContainer.children.length;
-  linesEl.textContent = path + '  \u00b7  ' + lineCount + ' lines';
-
-  fileEl.appendChild(linesContainer);
-
-  sourceViewer.innerHTML = '';
-  sourceViewer.appendChild(fileEl);
-}
-
-function formatLineNumbers(highlightedHtml) {
-  var container = document.createElement('div');
-  var hlLines = highlightedHtml.split('\n');
-
-  if (hlLines.length > 0 && hlLines[hlLines.length - 1] === '') {
-    hlLines.pop();
-  }
-
-  for (var i = 0; i < hlLines.length; i++) {
-    var lineEl = document.createElement('div');
-    lineEl.className = 'source-line';
-
-    var numEl = document.createElement('span');
-    numEl.className = 'source-line__num';
-    numEl.textContent = String(i + 1);
-
-    var codeEl = document.createElement('span');
-    codeEl.className = 'source-line__code';
-    codeEl.innerHTML = hlLines[i];
-
-    lineEl.appendChild(numEl);
-    lineEl.appendChild(codeEl);
-    container.appendChild(lineEl);
-  }
-
-  return container;
 }
 
 // ── Helper: Add Messages ─────────────────────────────────────
@@ -377,6 +307,90 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+// ── Source Viewer ─────────────────────────────────────────────
+async function loadSource(path) {
+  sourceViewer.textContent = 'Loading ' + path + '…';
+  try {
+    var response = await fetch('/api/sources?path=' + encodeURIComponent(path));
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    var data = await response.json();
+
+    var lang = data.language || 'text';
+    var highlighted;
+    try {
+      highlighted = hljs.highlight(data.content, { language: lang === 'dart' ? 'dart' : lang }).value;
+    } catch (hlErr) {
+      highlighted = escapeHtml(data.content);
+    }
+
+    // Build source viewer DOM safely
+    sourceViewer.textContent = '';
+    var header = document.createElement('div');
+    header.className = 'source-header';
+    header.textContent = path;
+    sourceViewer.appendChild(header);
+
+    var pre = document.createElement('pre');
+    pre.className = 'source-code';
+    var code = document.createElement('code');
+    // highlighted is from hljs which produces safe HTML from our own file content
+    // (local files only, path-validated by backend)
+    code.innerHTML = formatLineNumbers(highlighted);
+    pre.appendChild(code);
+    sourceViewer.appendChild(pre);
+  } catch (err) {
+    sourceViewer.textContent = 'Could not load ' + path + ': ' + err.message;
+  }
+}
+
+function formatLineNumbers(highlightedHtml) {
+  var lines = highlightedHtml.split('\n');
+  var rows = '';
+  for (var i = 0; i < lines.length; i++) {
+    var lineNum = i + 1;
+    rows += '<div class="source-line">'
+      + '<span class="source-line__num">' + lineNum + '</span>'
+      + '<span class="source-line__code">' + (lines[i] || ' ') + '</span>'
+      + '</div>';
+  }
+  return rows;
+}
+
+// ── Resize Handle ─────────────────────────────────────────────
+(function () {
+  if (!resizeHandle) return;
+  var splitPane = resizeHandle.parentElement;
+  var isDragging = false;
+  var startX = 0;
+  var startLeft = 0;
+
+  resizeHandle.addEventListener('mousedown', function (e) {
+    isDragging = true;
+    startX = e.clientX;
+    startLeft = splitPane.children[0].getBoundingClientRect().width;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', function (e) {
+    if (!isDragging) return;
+    var delta = e.clientX - startX;
+    var newLeft = startLeft + delta;
+    var totalWidth = splitPane.getBoundingClientRect().width;
+    var minPanel = 200;
+    newLeft = Math.max(minPanel, Math.min(newLeft, totalWidth - minPanel - 4));
+    splitPane.style.gridTemplateColumns = newLeft + 'px 4px 1fr';
+  });
+
+  document.addEventListener('mouseup', function () {
+    if (!isDragging) return;
+    isDragging = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
 // ── Status Polling ───────────────────────────────────────────
 async function pollStatus() {
   try {
@@ -406,42 +420,7 @@ async function pollStatus() {
   }
 }
 
-// ── Resize Handle ────────────────────────────────────────────
-(function initResize() {
-  var isDragging  = false;
-  var startX      = 0;
-  var startLeftPx = 0;
 
-  resizeHandle.addEventListener('mousedown', function (e) {
-    e.preventDefault();
-    isDragging = true;
-    startX = e.clientX;
-    resizeHandle.classList.add('is-dragging');
-
-    var cols    = getComputedStyle(splitPane).gridTemplateColumns.split(' ');
-    startLeftPx = parseFloat(cols[0]) || splitPane.getBoundingClientRect().width / 2;
-  });
-
-  document.addEventListener('mousemove', function (e) {
-    if (!isDragging) return;
-
-    var rect     = splitPane.getBoundingClientRect();
-    var totalW   = rect.width;
-    var handleW  = 4;
-    var minPanel = 200;
-
-    var newLeft  = Math.max(minPanel, Math.min(totalW - handleW - minPanel, startLeftPx + (e.clientX - startX)));
-    var newRight = totalW - handleW - newLeft;
-
-    splitPane.style.gridTemplateColumns = newLeft + 'px ' + handleW + 'px ' + newRight + 'px';
-  });
-
-  document.addEventListener('mouseup', function () {
-    if (!isDragging) return;
-    isDragging = false;
-    resizeHandle.classList.remove('is-dragging');
-  });
-})();
 
 // ── Init ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', function () {
