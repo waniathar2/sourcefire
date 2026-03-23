@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cravv Observatory</title>
+
+  <!-- highlight.js: atom-one-dark theme + Dart language -->
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css"
+  />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/dart.min.js"></script>
+
+  <!-- marked.js -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+
+  <!-- Status Bar -->
+  <header class="status-bar">
+    <div class="status-bar__logo">&#9689; Cravv Observatory</div>
+    <div class="status-bar__controls">
+      <span id="index-status" class="index-status-badge">Indexing...</span>
+      <label for="model-select" class="visually-hidden">Model</label>
+      <select id="model-select" class="model-select">
+        <option value="gemini-2.5-flash">Gemini Flash (fast)</option>
+        <option value="gemini-2.5-pro">Gemini Pro (deep)</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- Main Split Pane -->
+  <main class="split-pane">
+
+    <!-- Chat Panel (left) -->
+    <section class="panel panel--chat" aria-label="Chat">
+      <div id="chat-messages" class="chat-messages" role="log" aria-live="polite">
+        <div class="chat-message chat-message--welcome">
+          <p>
+            Welcome to <strong>Cravv Observatory</strong>. Ask anything about
+            the codebase — paste an error, describe a feature, or request an
+            explanation.
+          </p>
+        </div>
+      </div>
+
+      <!-- Input Area -->
+      <div class="input-area">
+        <!-- Mode Tabs -->
+        <div class="mode-tabs" role="tablist" aria-label="Query mode">
+          <button
+            class="mode-tab mode-tab--active"
+            role="tab"
+            aria-selected="true"
+            data-mode="debug"
+          >
+            <span class="mode-dot mode-dot--debug"></span>
+            Debug
+          </button>
+          <button
+            class="mode-tab"
+            role="tab"
+            aria-selected="false"
+            data-mode="feature"
+          >
+            <span class="mode-dot mode-dot--feature"></span>
+            Feature
+          </button>
+          <button
+            class="mode-tab"
+            role="tab"
+            aria-selected="false"
+            data-mode="explain"
+          >
+            <span class="mode-dot mode-dot--explain"></span>
+            Explain
+          </button>
+        </div>
+
+        <!-- Textarea + Send -->
+        <div class="input-row">
+          <textarea
+            id="query-input"
+            class="query-input"
+            rows="4"
+            placeholder="Paste your error or stack trace..."
+            aria-label="Query input"
+          ></textarea>
+          <button id="send-btn" class="send-btn" aria-label="Send query">
+            &#8594;
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Resize Handle -->
+    <div id="resize-handle" class="resize-handle" role="separator" aria-orientation="vertical"></div>
+
+    <!-- Source Viewer Panel (right) -->
+    <section class="panel panel--source" aria-label="Source viewer">
+      <div id="source-viewer" class="source-viewer">
+        <p class="source-viewer__placeholder">
+          Source references will appear here when you ask a question.
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Info Bar (footer) -->
+  <footer class="info-bar">
+    <span id="retrieval-stats" class="retrieval-stats">Ready</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
