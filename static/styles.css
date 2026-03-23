@@ -1,0 +1,615 @@
+/* ============================================================
+   Cravv Observatory — Dark Forge Theme
+   ============================================================ */
+
+/* Google Fonts: JetBrains Mono */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+
+/* Fontshare: Satoshi (fallback to system sans if CDN unreachable) */
+@import url('https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap');
+
+/* ── Color Tokens ─────────────────────────────────────────── */
+:root {
+  --surface-0:    #0E0E10;
+  --surface-1:    #16161A;
+  --surface-2:    #1E1E24;
+  --border:       #2A2A32;
+  --text-primary: #E8E6E3;
+  --text-muted:   #6B6B76;
+  --accent:       #E89856;
+  --accent-glow:  #E8985620;
+  --success:      #6B9E78;
+  --danger:       #C85C50;
+
+  /* Dot colors */
+  --dot-debug:    #C85C50;
+  --dot-feature:  #9B59B6;
+  --dot-explain:  #3498DB;
+
+  /* Sizing */
+  --status-bar-h: 48px;
+  --info-bar-h:   32px;
+  --handle-w:     4px;
+}
+
+/* ── Reset & Base ─────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Utility: visually hidden (accessible labels) */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ── Status Bar ───────────────────────────────────────────── */
+.status-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--status-bar-h);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.status-bar__logo {
+  font-family: 'Satoshi', system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.status-bar__controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Index status badge */
+.index-status-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+
+.index-status-badge.is-ready {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.index-status-badge.is-error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* Model select */
+.model-select {
+  appearance: none;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 28px 4px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236B6B76'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  outline: none;
+  transition: border-color 150ms ease;
+}
+
+.model-select:hover,
+.model-select:focus {
+  border-color: var(--accent);
+}
+
+/* ── Info Bar ─────────────────────────────────────────────── */
+.info-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: var(--info-bar-h);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  background: var(--surface-1);
+  border-top: 1px solid var(--border);
+}
+
+.retrieval-stats {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Main Split Pane ──────────────────────────────────────── */
+.split-pane {
+  position: fixed;
+  top: var(--status-bar-h);
+  bottom: var(--info-bar-h);
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: 1fr var(--handle-w) 1fr;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+}
+
+/* ── Panel Base ───────────────────────────────────────────── */
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--surface-1);
+}
+
+/* ── Resize Handle ────────────────────────────────────────── */
+.resize-handle {
+  width: var(--handle-w);
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  transition: background 150ms ease;
+  flex-shrink: 0;
+}
+
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  inset: 0 -3px;
+}
+
+.resize-handle:hover,
+.resize-handle.is-dragging {
+  background: var(--accent);
+}
+
+/* ── Chat Panel ───────────────────────────────────────────── */
+.panel--chat {
+  border-right: none;
+}
+
+/* Messages scroll area */
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Chat Messages ────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.chat-message {
+  animation: fadeIn 200ms ease forwards;
+  max-width: 90%;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+/* Welcome message */
+.chat-message--welcome {
+  align-self: center;
+  max-width: 480px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  text-align: center;
+  border-radius: 8px;
+  margin: auto;
+}
+
+.chat-message--welcome strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* User messages — right aligned */
+.chat-message--user {
+  align-self: flex-end;
+  background: var(--accent-glow);
+  border: 1px solid rgba(232, 152, 86, 0.25);
+  color: var(--text-primary);
+  border-bottom-right-radius: 2px;
+}
+
+/* Assistant messages — left aligned */
+.chat-message--assistant {
+  align-self: flex-start;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-bottom-left-radius: 2px;
+}
+
+/* Inline code within messages */
+.chat-message code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  background: var(--surface-0);
+  color: var(--accent);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* Code blocks within messages */
+.chat-message pre {
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  margin: 8px 0;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-ligatures: contextual;
+}
+
+.chat-message pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+
+/* Markdown elements inside messages */
+.chat-message p + p {
+  margin-top: 8px;
+}
+
+.chat-message ul,
+.chat-message ol {
+  padding-left: 20px;
+  margin: 6px 0;
+}
+
+.chat-message li {
+  margin: 2px 0;
+}
+
+.chat-message strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* ── Input Area ───────────────────────────────────────────── */
+.input-area {
+  flex-shrink: 0;
+  background: var(--surface-1);
+  border-top: 1px solid var(--border);
+}
+
+/* Mode Tabs */
+.mode-tabs {
+  display: flex;
+  padding: 0 12px;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mode-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease;
+  margin-bottom: -1px;
+  user-select: none;
+}
+
+.mode-tab:hover {
+  color: var(--text-primary);
+}
+
+.mode-tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* Mode dots */
+.mode-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mode-dot--debug   { background: var(--dot-debug); }
+.mode-dot--feature { background: var(--dot-feature); }
+.mode-dot--explain { background: var(--dot-explain); }
+
+/* Input row */
+.input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px;
+}
+
+.query-input {
+  flex: 1;
+  resize: none;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  min-height: 80px;
+  max-height: 240px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.query-input::placeholder {
+  color: var(--text-muted);
+}
+
+.query-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.send-btn {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--surface-0);
+  border: none;
+  border-radius: 6px;
+  font-size: 18px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 150ms ease, transform 100ms ease;
+  user-select: none;
+}
+
+.send-btn:hover {
+  opacity: 0.88;
+}
+
+.send-btn:active {
+  transform: scale(0.94);
+}
+
+.send-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Source Viewer Panel ──────────────────────────────────── */
+.panel--source {
+  background: var(--surface-1);
+}
+
+.source-viewer {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 16px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  font-variant-ligatures: contextual;
+  animation: fadeIn 150ms ease;
+}
+
+.source-viewer__placeholder {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  margin-top: 64px;
+  padding: 0 32px;
+}
+
+/* Source file header */
+.source-file {
+  animation: fadeIn 150ms ease forwards;
+}
+
+.source-file__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.source-file__name {
+  font-family: 'Satoshi', system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.source-file__lines {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* Source lines */
+.source-line {
+  display: flex;
+  gap: 0;
+}
+
+.source-line__num {
+  min-width: 40px;
+  color: var(--text-muted);
+  text-align: right;
+  padding-right: 16px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.source-line__code {
+  flex: 1;
+  white-space: pre;
+  overflow: visible;
+}
+
+/* Highlighted line — amber left border accent */
+.source-line--highlight {
+  background: rgba(232, 152, 86, 0.08);
+  border-left: 3px solid var(--accent);
+  margin-left: -3px;
+  padding-left: 0;
+}
+
+.source-line--highlight .source-line__num {
+  color: var(--accent);
+}
+
+/* Separator between source chunks */
+.source-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 16px 0;
+}
+
+/* ── Syntax highlight overrides (atom-one-dark compat) ─────── */
+.hljs {
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+/* ── Loading / Thinking state ─────────────────────────────── */
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50%       { opacity: 1; }
+}
+
+.chat-message--thinking {
+  align-self: flex-start;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 2px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 12px 16px;
+  animation: fadeIn 200ms ease forwards;
+}
+
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* ── Stagger animation for message list ───────────────────── */
+.chat-messages > *:nth-child(1)  { animation-delay: 0ms; }
+.chat-messages > *:nth-child(2)  { animation-delay: 30ms; }
+.chat-messages > *:nth-child(3)  { animation-delay: 60ms; }
+.chat-messages > *:nth-child(4)  { animation-delay: 90ms; }
+.chat-messages > *:nth-child(5)  { animation-delay: 120ms; }
+.chat-messages > *:nth-child(n+6) { animation-delay: 150ms; }
+
+/* ── Responsive: stack vertically on narrow viewports ─────── */
+@media (max-width: 768px) {
+  .split-pane {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr var(--handle-w) 1fr;
+    overflow-y: auto;
+  }
+
+  .resize-handle {
+    width: 100%;
+    height: var(--handle-w);
+    cursor: row-resize;
+  }
+
+  .panel--chat,
+  .panel--source {
+    min-height: 300px;
+  }
+
+  .chat-message {
+    max-width: 95%;
+  }
+}
