@@ -1,0 +1,25 @@
+[project]
+name = "tara-rag"
+version = "0.1.0"
+description = "Cravv Observatory — local RAG codebase guide"
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex",
+    "langchain",
+    "langchain-anthropic",
+    "fastapi",
+    "uvicorn[standard]",
+    "sse-starlette",
+    "psycopg[binary]",
+    "psycopg-pool",
+    "sentence-transformers",
+    "tree-sitter",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
