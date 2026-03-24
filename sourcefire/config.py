@@ -1,53 +1,148 @@
+"""Configuration for Sourcefire — loaded from .sourcefire/config.toml."""
+
+from __future__ import annotations
+
 import os
+import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
-from dotenv import load_dotenv
 
-load_dotenv()
+import tomli_w
 
-# Paths
-BASE_DIR = Path(__file__).resolve().parent.parent
-CODEBASE_PATH = Path(os.getenv("CODEBASE_PATH", ".")).resolve()
 
-# Project identity (used in UI, prompts, API metadata)
-PROJECT_NAME: str = os.getenv("PROJECT_NAME", "Sourcefire")
+@dataclass
+class SourcefireConfig:
+    """All Sourcefire configuration for a project."""
 
-# Language override — if not set, auto-detected from codebase marker files
-LANGUAGE_OVERRIDE: str | None = os.getenv("LANGUAGE", None)
+    # Resolved at runtime, not stored in TOML
+    project_dir: Path = field(default_factory=Path.cwd)
+    sourcefire_dir: Path = field(default_factory=lambda: Path.cwd() / ".sourcefire")
 
-# Indexing — base patterns; language profile patterns are merged at runtime
-EXTRA_INCLUDE_PATTERNS: list[str] = [
-    "CLAUDE.md",
-    "README.md",
-]
-EXTRA_EXCLUDE_PATTERNS: list[str] = [
-    ".claude/**",
-    "docs/superpowers/**",
-]
-CHUNK_SIZE: int = 1000
-CHUNK_OVERLAP: int = 300
+    # [project]
+    project_name: str = ""
+    language: str = "auto"
 
-# Retrieval
-TOP_K: int = 8
-RELEVANCE_THRESHOLD: float = 0.3
+    # [indexer]
+    include: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
+    chunk_size: int = 1000
+    chunk_overlap: int = 300
 
-# Generation
-DEFAULT_MODEL: str = "gemini-3.1-flash-lite-preview"
+    # [llm]
+    provider: str = "gemini"
+    model: str = "gemini-2.5-flash"
+    api_key_env: str = "GEMINI_API_KEY"
+
+    # [server]
+    host: str = "127.0.0.1"
+    port: int = 8000
+
+    # [retrieval]
+    top_k: int = 8
+    relevance_threshold: float = 0.3
+
+    # Versioning
+    config_version: int = 1
+
+    @property
+    def gemini_api_key(self) -> str:
+        return os.getenv(self.api_key_env, "")
+
+    @property
+    def chroma_dir(self) -> Path:
+        return self.sourcefire_dir / "chroma"
+
+    @property
+    def graph_path(self) -> Path:
+        return self.sourcefire_dir / "graph.json"
+
+    @property
+    def config_path(self) -> Path:
+        return self.sourcefire_dir / "config.toml"
+
+    @property
+    def lock_path(self) -> Path:
+        return self.sourcefire_dir / ".lock"
+
+
+# Constants used by other modules
 EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-
-# Token budgets
 MAX_TOKEN_BUDGET: dict[str, int] = {
-    "gemini-3.1-flash-lite-preview": 100_000,
-    "gemini-3.1-pro-preview": 200_000,
+    "gemini-2.5-flash": 100_000,
+    "gemini-2.5-pro": 200_000,
 }
 MAX_HISTORY_PAIRS: int = 5
-RESPONSE_HEADROOM: int = 8_000  # tokens reserved for model response
+RESPONSE_HEADROOM: int = 8_000
 
-# Infrastructure
-DATABASE_URL: str = os.getenv(
-    "COCOINDEX_DATABASE_URL", "postgresql://localhost:5432/tara_rag"
-)
-GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 
-# Server
-HOST: str = "127.0.0.1"
-PORT: int = 8000
+def default_config(project_dir: Path) -> SourcefireConfig:
+    """Return a SourcefireConfig with sensible defaults for the given project."""
+    return SourcefireConfig(
+        project_dir=project_dir,
+        sourcefire_dir=project_dir / ".sourcefire",
+        project_name=project_dir.name,
+    )
+
+
+def load_config(project_dir: Path, sourcefire_dir: Path) -> SourcefireConfig:
+    """Load config from .sourcefire/config.toml."""
+    config_path = sourcefire_dir / "config.toml"
+    raw = config_path.read_text(encoding="utf-8")
+    data = tomllib.loads(raw)
+
+    project = data.get("project", {})
+    indexer = data.get("indexer", {})
+    llm = data.get("llm", {})
+    server = data.get("server", {})
+    retrieval = data.get("retrieval", {})
+
+    return SourcefireConfig(
+        project_dir=project_dir,
+        sourcefire_dir=sourcefire_dir,
+        config_version=data.get("config_version", 1),
+        project_name=project.get("name", project_dir.name),
+        language=project.get("language", "auto"),
+        include=indexer.get("include", []),
+        exclude=indexer.get("exclude", []),
+        chunk_size=indexer.get("chunk_size", 1000),
+        chunk_overlap=indexer.get("chunk_overlap", 300),
+        provider=llm.get("provider", "gemini"),
+        model=llm.get("model", "gemini-2.5-flash"),
+        api_key_env=llm.get("api_key_env", "GEMINI_API_KEY"),
+        host=server.get("host", "127.0.0.1"),
+        port=server.get("port", 8000),
+        top_k=retrieval.get("top_k", 8),
+        relevance_threshold=retrieval.get("relevance_threshold", 0.3),
+    )
+
+
+def save_config(config: SourcefireConfig) -> None:
+    """Write config to .sourcefire/config.toml."""
+    data = {
+        "config_version": config.config_version,
+        "project": {
+            "name": config.project_name,
+            "language": config.language,
+        },
+        "indexer": {
+            "include": config.include,
+            "exclude": config.exclude,
+            "chunk_size": config.chunk_size,
+            "chunk_overlap": config.chunk_overlap,
+        },
+        "llm": {
+            "provider": config.provider,
+            "model": config.model,
+            "api_key_env": config.api_key_env,
+        },
+        "server": {
+            "host": config.host,
+            "port": config.port,
+        },
+        "retrieval": {
+            "top_k": config.top_k,
+            "relevance_threshold": config.relevance_threshold,
+        },
+    }
+    config.config_path.parent.mkdir(parents=True, exist_ok=True)
+    config.config_path.write_text(tomli_w.dumps(data), encoding="utf-8")
