@@ -30,7 +30,7 @@ class SourcefireConfig:
 
     # [llm]
     provider: str = "gemini"
-    model: str = "gemini-2.5-flash"
+    model: str = "gemini-3.1-flash-lite-preview"
     api_key_env: str = "GEMINI_API_KEY"
 
     # [server]
@@ -68,8 +68,8 @@ class SourcefireConfig:
 # Constants used by other modules
 EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
 MAX_TOKEN_BUDGET: dict[str, int] = {
-    "gemini-2.5-flash": 100_000,
-    "gemini-2.5-pro": 200_000,
+    "gemini-3.1-flash-lite-preview": 100_000,
+    "gemini-3.1-pro-preview": 200_000,
 }
 MAX_HISTORY_PAIRS: int = 5
 RESPONSE_HEADROOM: int = 8_000
@@ -118,7 +118,7 @@ def load_config(project_dir: Path, sourcefire_dir: Path) -> SourcefireConfig:
         chunk_size=indexer.get("chunk_size", 1000),
         chunk_overlap=indexer.get("chunk_overlap", 300),
         provider=llm.get("provider", "gemini"),
-        model=llm.get("model", "gemini-2.5-flash"),
+        model=llm.get("model", "gemini-3.1-flash-lite-preview"),
         api_key_env=llm.get("api_key_env", "GEMINI_API_KEY"),
         host=server.get("host", "127.0.0.1"),
         port=server.get("port", 8000),

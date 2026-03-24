@@ -827,7 +827,7 @@ async def stream_rag_response(
     graph: ImportGraph,
     query: str,
     mode: str,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.1-flash-lite-preview",
     history: list[dict[str, str]] | None = None,
     profile: LanguageProfile | None = None,
     project_dir: Path | None = None,

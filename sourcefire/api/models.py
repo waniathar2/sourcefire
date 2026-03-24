@@ -8,7 +8,7 @@ from pydantic import BaseModel
 class QueryRequest(BaseModel):
     query: str
     mode: Literal["debug", "feature", "explain"] = "debug"
-    model: Literal["gemini-2.5-flash", "gemini-2.5-pro"] = "gemini-2.5-flash"
+    model: Literal["gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview"] = "gemini-3.1-flash-lite-preview"
     history: list[dict] = []
 
 

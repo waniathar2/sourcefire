@@ -49,7 +49,7 @@ def _generate_patterns_via_llm(file_tree: str, api_key: str) -> dict[str, list[s
         from langchain_core.messages import HumanMessage
 
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-3.1-flash-lite-preview",
             google_api_key=api_key,
         )
 
