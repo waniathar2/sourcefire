@@ -131,29 +131,43 @@ def get_chunks_by_files(
     return rows
 
 
-def get_indexed_files(collection: chromadb.Collection) -> set[str]:
-    """Return set of all filenames currently in the collection."""
-    results = collection.get(include=["metadatas"])
+def get_indexed_files_and_mtimes(collection: chromadb.Collection) -> tuple[set[str], dict[str, float]]:
+    """Return (set of filenames, {filename: mtime}) for all indexed chunks.
+
+    Uses pagination to avoid loading the entire collection into memory at once.
+    """
     files: set[str] = set()
-    if results["metadatas"]:
+    mtimes: dict[str, float] = {}
+    batch_size = 10000
+    offset = 0
+
+    total = collection.count()
+    if total == 0:
+        return files, mtimes
+
+    while offset < total:
+        results = collection.get(
+            include=["metadatas"],
+            limit=batch_size,
+            offset=offset,
+        )
+        if not results["metadatas"]:
+            break
         for meta in results["metadatas"]:
             if meta and "filename" in meta:
-                files.add(meta["filename"])
-    return files
+                fname = meta["filename"]
+                files.add(fname)
+                if "mtime" in meta:
+                    try:
+                        stored = float(meta["mtime"])
+                        # Keep the max mtime per file (chunks share the same mtime)
+                        if fname not in mtimes or stored > mtimes[fname]:
+                            mtimes[fname] = stored
+                    except (ValueError, TypeError):
+                        pass
+        offset += batch_size
 
-
-def get_stored_mtimes(collection: chromadb.Collection) -> dict[str, float]:
-    """Get stored mtimes for all indexed files from ChromaDB metadata."""
-    results = collection.get(include=["metadatas"])
-    mtimes: dict[str, float] = {}
-    if results["metadatas"]:
-        for meta in results["metadatas"]:
-            if meta and "filename" in meta and "mtime" in meta:
-                try:
-                    mtimes[meta["filename"]] = float(meta["mtime"])
-                except (ValueError, TypeError):
-                    pass
-    return mtimes
+    return files, mtimes
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +182,7 @@ async def async_query_similar(
     where: dict | None = None,
 ) -> list[dict[str, Any]]:
     """Async wrapper for query_similar."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, partial(query_similar, collection, query_embedding, n_results, where)
     )
@@ -179,7 +193,7 @@ async def async_get_chunks_by_files(
     filenames: list[str],
 ) -> list[dict[str, Any]]:
     """Async wrapper for get_chunks_by_files."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, partial(get_chunks_by_files, collection, filenames)
     )
@@ -190,7 +204,7 @@ async def async_delete_file_chunks(
     filename: str,
 ) -> None:
     """Async wrapper for delete_file_chunks."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None, partial(delete_file_chunks, collection, filename)
     )

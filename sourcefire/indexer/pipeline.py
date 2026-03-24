@@ -14,7 +14,7 @@ from typing import Any
 import chromadb
 
 from sourcefire.config import SourcefireConfig
-from sourcefire.db import add_chunks, reset_collection, delete_file_chunks, get_indexed_files, get_stored_mtimes
+from sourcefire.db import add_chunks, reset_collection, delete_file_chunks, get_indexed_files_and_mtimes
 from sourcefire.indexer.embeddings import embed_batch
 from sourcefire.indexer.language_profiles import LanguageProfile, get_profile, get_profile_for_extension
 from sourcefire.indexer.metadata import chunk_source_file, extract_metadata
@@ -73,6 +73,9 @@ def _chunk_plain_text(
     """Split *text* into overlapping chunks of at most *chunk_size* characters."""
     if len(text) <= chunk_size:
         return [text]
+
+    # Guard against infinite loop if overlap >= size
+    chunk_overlap = min(chunk_overlap, chunk_size - 1)
 
     chunks: list[str] = []
     start = 0
@@ -233,8 +236,7 @@ def run_indexing(
         files_to_index = all_disk_files
     elif not full:
         # Incremental: compare mtimes
-        indexed_files = get_indexed_files(collection)
-        stored_mtimes = get_stored_mtimes(collection)
+        indexed_files, stored_mtimes = get_indexed_files_and_mtimes(collection)
 
         current_files: dict[str, Path] = {}
         for f in all_disk_files:

@@ -401,6 +401,9 @@ async function pollStatus() {
     if (data.language && data.language !== 'generic') {
       langBadge.textContent = data.language;
     }
+    if (data.project_name) {
+      document.title = data.project_name + ' — Sourcefire';
+    }
   } catch(e) {
     indexStatus.textContent = 'offline';
     indexStatus.classList.add('is-error');

@@ -17,6 +17,7 @@ class StatusResponse(BaseModel):
     last_indexed: str
     index_status: str
     language: str = "generic"
+    project_name: str = "Sourcefire"
 
 
 class SourceResponse(BaseModel):

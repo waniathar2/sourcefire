@@ -87,8 +87,19 @@ def default_config(project_dir: Path) -> SourcefireConfig:
 def load_config(project_dir: Path, sourcefire_dir: Path) -> SourcefireConfig:
     """Load config from .sourcefire/config.toml."""
     config_path = sourcefire_dir / "config.toml"
-    raw = config_path.read_text(encoding="utf-8")
-    data = tomllib.loads(raw)
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        print(f"Error: Config file not found at {config_path}")
+        print("Run `sourcefire --reinit` to regenerate it.")
+        raise SystemExit(1)
+
+    try:
+        data = tomllib.loads(raw)
+    except tomllib.TOMLDecodeError as exc:
+        print(f"Error: Invalid TOML in {config_path}: {exc}")
+        print("Fix the syntax or run `sourcefire --reinit` to regenerate.")
+        raise SystemExit(1)
 
     project = data.get("project", {})
     indexer = data.get("indexer", {})

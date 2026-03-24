@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import fcntl
 import os
 import socket
 import sys
@@ -12,6 +11,11 @@ import webbrowser
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 import uvicorn
 from dotenv import load_dotenv
@@ -32,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reinit", action="store_true", help="Regenerate .sourcefire/config.toml via LLM")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
     parser.add_argument("--uninstall", action="store_true", help="Remove global ~/.sourcefire/ config directory")
+    parser.add_argument("--version", action="store_true", help="Show version and exit")
     return parser.parse_args()
 
 
@@ -60,7 +65,10 @@ def acquire_lock(lock_path: Path) -> int | None:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if sys.platform == "win32":
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return fd
     except (OSError, BlockingIOError):
         return None
@@ -69,7 +77,10 @@ def acquire_lock(lock_path: Path) -> int | None:
 def release_lock(fd: int, lock_path: Path) -> None:
     """Release the file lock."""
     try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        if sys.platform == "win32":
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
     except OSError:
         pass
@@ -169,6 +180,7 @@ async def lifespan(app: FastAPI):
         "last_indexed": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "index_status": "ready",
         "language": lang_name,
+        "project_name": config.project_name or project_dir.name,
     }
 
     # Inject dependencies into routes
@@ -204,14 +216,20 @@ async def lifespan(app: FastAPI):
 # App
 # ---------------------------------------------------------------------------
 
+from importlib.metadata import version as _pkg_version
 from importlib.resources import files as _resource_files
 
 _static_dir = str(Path(_resource_files("sourcefire")) / "static")
 
+try:
+    _version = _pkg_version("sourcefire")
+except Exception:
+    _version = "0.0.0"
+
 app = FastAPI(
     title="Sourcefire",
     description="AI-powered codebase RAG. Created by Athar Wani.",
-    version="0.2.0",
+    version=_version,
     lifespan=lifespan,
 )
 
@@ -235,6 +253,15 @@ def main() -> None:
     """Sourcefire CLI entry point."""
     args = parse_args()
 
+    # Handle --version
+    if args.version:
+        from importlib.metadata import version as _get_ver
+        try:
+            print(f"sourcefire {_get_ver('sourcefire')}")
+        except Exception:
+            print("sourcefire (version unknown)")
+        return
+
     # Handle --uninstall
     if args.uninstall:
         from sourcefire.global_config import uninstall
@@ -242,6 +269,29 @@ def main() -> None:
         return
 
     project_dir, sourcefire_dir = discover_project()
+
+    # Safety check: warn if running in a broad directory (home, /, etc.)
+    needs_init = not sourcefire_dir.exists() or not (sourcefire_dir / "config.toml").exists()
+    if needs_init:
+        dangerous_dirs = {
+            Path.home().resolve(),
+            Path("/").resolve(),
+        }
+        # Also flag common broad directories
+        for name in ("Documents", "Downloads", "Desktop"):
+            dangerous_dirs.add((Path.home() / name).resolve())
+
+        if project_dir.resolve() in dangerous_dirs:
+            print(f"\n  WARNING: You are about to index: {project_dir.resolve()}")
+            print("  This is a broad directory and may index thousands of files.\n")
+            try:
+                confirm = input("  Do you trust this folder? (yes/no): ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\nAborted.")
+                sys.exit(1)
+            if confirm not in ("yes", "y"):
+                print("Aborted. Run sourcefire from a project directory instead.")
+                sys.exit(0)
 
     # Acquire lock
     lock_fd = acquire_lock(sourcefire_dir / ".lock")

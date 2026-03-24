@@ -181,7 +181,7 @@ async def retrieve_for_mode(
     profile: LanguageProfile | None = None,
 ) -> list[dict[str, Any]]:
     """Embed *query* and dispatch to the mode-specific retriever."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     query_vector: list[float] = await loop.run_in_executor(None, embed_text, query)
 
     if mode == "debug":
@@ -213,7 +213,7 @@ def _get_tools(
         Provide the relative filepath (e.g. 'src/main.py').
         """
         full_path = (_project_dir / filepath).resolve()
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
         if not full_path.is_file():
             return f"Error: File '{filepath}' not found in the codebase."
@@ -236,7 +236,7 @@ def _get_tools(
         else:
             full_path = (_project_dir / dir_path).resolve()
 
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
         if not full_path.is_dir():
             return f"Error: Directory '{dir_path}' not found."
@@ -270,7 +270,7 @@ def _get_tools(
         full_path = _project_dir if dir_path == "." else (_project_dir / dir_path)
         full_path = full_path.resolve()
 
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
 
         if not full_path.is_dir() and not full_path.is_file():
@@ -362,7 +362,7 @@ def _get_tools(
         else:
             full_path = (_project_dir / dir_path).resolve()
 
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
         if not full_path.is_dir():
             return f"Error: Directory '{dir_path}' not found."
@@ -401,7 +401,7 @@ def _get_tools(
         Provide relative filepath.
         """
         full_path = (_project_dir / filepath).resolve()
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
         try:
             result = subprocess.run(
@@ -423,7 +423,7 @@ def _get_tools(
         Use when you need to know who last changed specific lines and why.
         """
         full_path = (_project_dir / filepath).resolve()
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
         try:
             result = subprocess.run(
@@ -444,7 +444,7 @@ def _get_tools(
         Line numbers are 1-based. Returns lines with line numbers prefixed.
         """
         full_path = (_project_dir / filepath).resolve()
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
         if not full_path.is_file():
             return f"Error: File '{filepath}' not found."
@@ -468,7 +468,7 @@ def _get_tools(
         import re as re_mod
         full_path = _project_dir if dir_path == "." else (_project_dir / dir_path)
         full_path = full_path.resolve()
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
 
         try:
@@ -507,7 +507,7 @@ def _get_tools(
         """
         full_path = _project_dir if dir_path == "." else (_project_dir / dir_path)
         full_path = full_path.resolve()
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
 
         results = []
@@ -542,7 +542,7 @@ def _get_tools(
         cmd = ["git", "diff", "--stat", "-p", ref]
         if filepath:
             full_path = (_project_dir / filepath).resolve()
-            if not str(full_path).startswith(str(_project_dir.resolve())):
+            if not full_path.is_relative_to(_project_dir.resolve()):
                 return "Error: Path traversal not allowed."
             cmd.extend(["--", filepath])
         try:
@@ -600,7 +600,7 @@ def _get_tools(
         Use to quickly assess file complexity and recency.
         """
         full_path = (_project_dir / filepath).resolve()
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
         if not full_path.is_file():
             return f"Error: File '{filepath}' not found."
@@ -667,7 +667,7 @@ def _get_tools(
         (functions/methods invoked inside the given function's body).
         """
         full_path = (_project_dir / filepath).resolve()
-        if not str(full_path).startswith(str(_project_dir.resolve())):
+        if not full_path.is_relative_to(_project_dir.resolve()):
             return "Error: Path traversal not allowed."
         if not full_path.is_file():
             return f"Error: File '{filepath}' not found."
@@ -771,7 +771,7 @@ def _get_tools(
             return "Error: Vector database not available."
         try:
             full_path = (_project_dir / filepath).resolve()
-            if not str(full_path).startswith(str(_project_dir.resolve())):
+            if not full_path.is_relative_to(_project_dir.resolve()):
                 return "Error: Path traversal not allowed."
             if not full_path.is_file():
                 return f"Error: File '{filepath}' not found."

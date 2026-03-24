@@ -10,3 +10,4 @@ build/
 .sourcefire/chroma/
 .sourcefire/graph.json
 .sourcefire/.lock
+*.DS_Store

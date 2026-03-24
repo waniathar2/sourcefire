@@ -75,7 +75,7 @@ async def watch_and_reindex(
         # Handle deletions
         for rel in deleted_files:
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, delete_file_chunks, collection, rel)
                 graph.remove_file(rel)
                 print(f"[watcher] Removed: {rel}")
@@ -85,7 +85,7 @@ async def watch_and_reindex(
         # Handle additions/modifications
         if changed_files:
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 file_imports = await loop.run_in_executor(
                     None, index_files, collection, changed_files, config, profile
                 )

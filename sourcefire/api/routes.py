@@ -27,6 +27,7 @@ _index_status: dict[str, Any] = {
     "last_indexed": "never",
     "index_status": "not_ready",
     "language": "generic",
+    "project_name": "Sourcefire",
 }
 
 
@@ -135,10 +136,9 @@ async def sources(path: str = Query(..., description="Relative path within the c
     if _project_dir is None:
         raise HTTPException(status_code=503, detail="Project directory not initialized.")
 
-    codebase_resolved = _project_dir.resolve()
     full_path = (_project_dir / path).resolve()
 
-    if not str(full_path).startswith(str(codebase_resolved)):
+    if not full_path.is_relative_to(_project_dir.resolve()):
         raise HTTPException(status_code=400, detail="Path traversal detected.")
 
     if not full_path.is_file():
@@ -163,4 +163,5 @@ async def status() -> StatusResponse:
         last_indexed=str(_index_status.get("last_indexed", "never")),
         index_status=str(_index_status.get("index_status", "not_ready")),
         language=str(_index_status.get("language", "generic")),
+        project_name=str(_index_status.get("project_name", "Sourcefire")),
     )
