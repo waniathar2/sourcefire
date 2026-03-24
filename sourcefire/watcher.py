@@ -61,6 +61,12 @@ async def watch_and_reindex(
     """
     project_dir = config.project_dir
 
+    # Safety: refuse to watch home directory or root
+    dangerous = {Path.home().resolve(), Path("/").resolve()}
+    if project_dir.resolve() in dangerous:
+        print(f"[watcher] Refusing to watch {project_dir} — too broad. Watcher disabled.")
+        return
+
     print(f"[watcher] Watching {project_dir} for changes...")
 
     async for changes in awatch(
