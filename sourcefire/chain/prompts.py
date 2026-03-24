@@ -11,7 +11,9 @@ from sourcefire.config import MAX_HISTORY_PAIRS, MAX_TOKEN_BUDGET, RESPONSE_HEAD
 # System template
 # ---------------------------------------------------------------------------
 
-_SYSTEM_MD_PATH = Path(__file__).resolve().parent.parent.parent / "prompts" / "system.md"
+from importlib.resources import files as _resource_files
+
+_SYSTEM_MD_PATH = Path(str(_resource_files("sourcefire") / "prompts" / "system.md"))
 _SYSTEM_TEMPLATE: str = _SYSTEM_MD_PATH.read_text(encoding="utf-8")
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -11,34 +12,33 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
 
-from sourcefire.config import CODEBASE_PATH, DEFAULT_MODEL, GEMINI_API_KEY
 from sourcefire.indexer.embeddings import embed_text
 from sourcefire.indexer.language_profiles import LanguageProfile
 from sourcefire.retriever.search import semantic_search, get_chunks_by_filenames, parse_file_references
 from sourcefire.retriever.graph import ImportGraph
 from sourcefire.chain.prompts import assemble_prompt
+from sourcefire.db import query_similar
+
 
 # ---------------------------------------------------------------------------
 # Static context loader
 # ---------------------------------------------------------------------------
 
 
-def _load_static_context() -> tuple[str, str]:
-    """Load CLAUDE.md and memory markdown files from CODEBASE_PATH.
+def _load_static_context(project_dir: Path) -> tuple[str, str]:
+    """Load CLAUDE.md from project_dir.
 
     Returns:
         A 2-tuple of (claude_md_content, memory_content).
     """
     claude_md = ""
-    claude_md_path = CODEBASE_PATH / "CLAUDE.md"
+    claude_md_path = project_dir / "CLAUDE.md"
     if claude_md_path.is_file():
         try:
             claude_md = claude_md_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             pass
 
-    # Note: .claude memory files are excluded — they contain cross-project
-    # context from Claude Code sessions that would confuse the LLM.
     return claude_md, ""
 
 
@@ -48,7 +48,7 @@ def _load_static_context() -> tuple[str, str]:
 
 
 async def _retrieve_debug(
-    pool: Any,
+    collection: Any,
     graph: ImportGraph,
     query: str,
     query_vector: list[float],
@@ -59,20 +59,18 @@ async def _retrieve_debug(
     chunks: list[dict[str, Any]] = []
     seen_filenames: set[str] = set()
 
-    # 1. Parse explicit file references from the query.
     file_ref_patterns = profile.file_ref_patterns if profile else None
     file_refs = parse_file_references(query, file_ref_patterns)
     direct_filenames = [ref["file"] for ref in file_refs]
 
     if direct_filenames:
-        direct_chunks = await get_chunks_by_filenames(pool, direct_filenames)
+        direct_chunks = await get_chunks_by_filenames(collection, direct_filenames)
         for c in direct_chunks:
             c["priority"] = "direct"
             c.setdefault("relevance", 1.0)
             chunks.append(c)
             seen_filenames.add(c["filename"])
 
-        # 1-hop import graph expansion from each direct file.
         graph_filenames: list[str] = []
         for fname in direct_filenames:
             graph_filenames.extend(graph.get_neighbors(fname, hops=1))
@@ -80,15 +78,14 @@ async def _retrieve_debug(
         graph_filenames = [f for f in graph_filenames if f not in seen_filenames]
 
         if graph_filenames:
-            graph_chunks = await get_chunks_by_filenames(pool, graph_filenames)
+            graph_chunks = await get_chunks_by_filenames(collection, graph_filenames)
             for c in graph_chunks:
                 c["priority"] = "graph"
                 c.setdefault("relevance", 0.6)
                 chunks.append(c)
                 seen_filenames.add(c["filename"])
 
-    # 2. Semantic search to fill remaining budget.
-    semantic_chunks = await semantic_search(pool, query_vector, top_k=top_k)
+    semantic_chunks = await semantic_search(collection, query_vector, top_k=top_k)
     for c in semantic_chunks:
         if c["filename"] not in seen_filenames:
             c["priority"] = "semantic"
@@ -99,7 +96,7 @@ async def _retrieve_debug(
 
 
 async def _retrieve_feature(
-    pool: Any,
+    collection: Any,
     graph: ImportGraph,
     query: str,
     query_vector: list[float],
@@ -109,7 +106,7 @@ async def _retrieve_feature(
     """Feature mode: semantic search -> best feature -> retrieve feature chunks."""
     _FEATURE_CAP = 15
 
-    seed_chunks = await semantic_search(pool, query_vector, top_k=top_k)
+    seed_chunks = await semantic_search(collection, query_vector, top_k=top_k)
 
     feature_scores: dict[str, list[float]] = {}
     for c in seed_chunks:
@@ -124,7 +121,7 @@ async def _retrieve_feature(
     best_feature = max(feature_scores, key=lambda f: sum(feature_scores[f]) / len(feature_scores[f]))
 
     feature_chunks = await semantic_search(
-        pool,
+        collection,
         query_vector,
         top_k=_FEATURE_CAP,
         feature=best_feature,
@@ -136,7 +133,7 @@ async def _retrieve_feature(
 
 
 async def _retrieve_explain(
-    pool: Any,
+    collection: Any,
     graph: ImportGraph,
     query: str,
     query_vector: list[float],
@@ -147,7 +144,7 @@ async def _retrieve_explain(
     chunks: list[dict[str, Any]] = []
     seen_filenames: set[str] = set()
 
-    seed_chunks = await semantic_search(pool, query_vector, top_k=top_k)
+    seed_chunks = await semantic_search(collection, query_vector, top_k=top_k)
     for c in seed_chunks:
         c["priority"] = "semantic"
         chunks.append(c)
@@ -161,7 +158,7 @@ async def _retrieve_explain(
                 seen_filenames.add(neighbor)
 
     if neighbor_filenames:
-        neighbor_chunks = await get_chunks_by_filenames(pool, neighbor_filenames)
+        neighbor_chunks = await get_chunks_by_filenames(collection, neighbor_filenames)
         for c in neighbor_chunks:
             c["priority"] = "graph"
             c.setdefault("relevance", 0.5)
@@ -176,7 +173,7 @@ async def _retrieve_explain(
 
 
 async def retrieve_for_mode(
-    pool: Any,
+    collection: Any,
     graph: ImportGraph,
     query: str,
     mode: str,
@@ -188,19 +185,25 @@ async def retrieve_for_mode(
     query_vector: list[float] = await loop.run_in_executor(None, embed_text, query)
 
     if mode == "debug":
-        return await _retrieve_debug(pool, graph, query, query_vector, top_k, profile)
+        return await _retrieve_debug(collection, graph, query, query_vector, top_k, profile)
     elif mode == "feature":
-        return await _retrieve_feature(pool, graph, query, query_vector, top_k, profile)
+        return await _retrieve_feature(collection, graph, query, query_vector, top_k, profile)
     else:
-        return await _retrieve_explain(pool, graph, query, query_vector, top_k, profile)
+        return await _retrieve_explain(collection, graph, query, query_vector, top_k, profile)
 
 
 # ---------------------------------------------------------------------------
 # LangChain Tools
 # ---------------------------------------------------------------------------
 
-def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool: Any = None) -> list[Any]:
+def _get_tools(
+    graph: ImportGraph,
+    profile: LanguageProfile | None = None,
+    collection: Any = None,
+    project_dir: Path | None = None,
+) -> list[Any]:
 
+    _project_dir = project_dir or Path.cwd()
     searchable_exts = tuple(profile.searchable_extensions) if profile else (".py", ".js", ".ts", ".go", ".rs", ".java", ".dart", ".yaml", ".json", ".md")
 
     @tool
@@ -209,8 +212,8 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Use when you need to see exact implementation details.
         Provide the relative filepath (e.g. 'src/main.py').
         """
-        full_path = (CODEBASE_PATH / filepath).resolve()
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        full_path = (_project_dir / filepath).resolve()
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
         if not full_path.is_file():
             return f"Error: File '{filepath}' not found in the codebase."
@@ -229,14 +232,15 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Provide the relative path (e.g. 'src/components'). Use '.' for root.
         """
         if dir_path == ".":
-            full_path = CODEBASE_PATH.resolve()
+            full_path = _project_dir.resolve()
         else:
-            full_path = (CODEBASE_PATH / dir_path).resolve()
+            full_path = (_project_dir / dir_path).resolve()
 
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
         if not full_path.is_dir():
             return f"Error: Directory '{dir_path}' not found."
+
         try:
             items = []
             for item in full_path.iterdir():
@@ -263,11 +267,10 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Returns files and line numbers where the keyword appears.
         Use for variable names, classes, function names, or patterns.
         """
-        import os
-        full_path = CODEBASE_PATH if dir_path == "." else (CODEBASE_PATH / dir_path)
+        full_path = _project_dir if dir_path == "." else (_project_dir / dir_path)
         full_path = full_path.resolve()
 
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
 
         if not full_path.is_dir() and not full_path.is_file():
@@ -285,7 +288,7 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
                             lines = fpath.read_text("utf-8", "replace").splitlines()
                             for i, line in enumerate(lines):
                                 if query.lower() in line.lower():
-                                    rel_path = fpath.relative_to(CODEBASE_PATH)
+                                    rel_path = fpath.relative_to(_project_dir)
                                     results.append(f"{rel_path}:{i+1}: {line.strip()[:100]}")
                                     if len(results) >= 50:
                                         return f"Results truncated at 50 matches.\n" + "\n".join(results)
@@ -303,8 +306,6 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Searches for definition patterns like 'class Foo', 'def foo', 'function foo', etc.
         Returns file paths and line numbers.
         """
-        import os
-        # Language-aware definition patterns
         patterns = [
             f"class {symbol_name}",
             f"def {symbol_name}",
@@ -325,7 +326,7 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         ]
         results = []
         try:
-            for root, _, files in os.walk(CODEBASE_PATH):
+            for root, _, files in os.walk(_project_dir):
                 if any(x in root for x in [".git", "node_modules", "__pycache__", "build", "dist", "target", ".dart_tool"]):
                     continue
                 for file in files:
@@ -337,7 +338,7 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
                                 stripped = line.strip()
                                 for pattern in patterns:
                                     if stripped.startswith(pattern) or f" {pattern}" in stripped:
-                                        rel_path = fpath.relative_to(CODEBASE_PATH)
+                                        rel_path = fpath.relative_to(_project_dir)
                                         results.append(f"{rel_path}:{i+1}: {stripped[:120]}")
                                         break
                                 if len(results) >= 20:
@@ -357,11 +358,11 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Provide relative path and max depth (default 3).
         """
         if dir_path == ".":
-            full_path = CODEBASE_PATH.resolve()
+            full_path = _project_dir.resolve()
         else:
-            full_path = (CODEBASE_PATH / dir_path).resolve()
+            full_path = (_project_dir / dir_path).resolve()
 
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
         if not full_path.is_dir():
             return f"Error: Directory '{dir_path}' not found."
@@ -399,16 +400,14 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Shows who changed it, when, and why. Use to understand evolution of a file.
         Provide relative filepath.
         """
-        full_path = (CODEBASE_PATH / filepath).resolve()
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        full_path = (_project_dir / filepath).resolve()
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
         try:
             result = subprocess.run(
                 ["git", "log", f"-{max_commits}", "--pretty=format:%h %ai %s", "--", filepath],
-                cwd=str(CODEBASE_PATH),
-                capture_output=True,
-                text=True,
-                timeout=10,
+                cwd=str(_project_dir),
+                capture_output=True, text=True, timeout=10,
             )
             if result.returncode != 0:
                 return f"Git error: {result.stderr.strip()}"
@@ -423,16 +422,14 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         """Show git blame for specific line range of a file.
         Use when you need to know who last changed specific lines and why.
         """
-        full_path = (CODEBASE_PATH / filepath).resolve()
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        full_path = (_project_dir / filepath).resolve()
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
         try:
             result = subprocess.run(
                 ["git", "blame", f"-L{start_line},{end_line}", "--date=short", filepath],
-                cwd=str(CODEBASE_PATH),
-                capture_output=True,
-                text=True,
-                timeout=10,
+                cwd=str(_project_dir),
+                capture_output=True, text=True, timeout=10,
             )
             if result.returncode != 0:
                 return f"Git error: {result.stderr.strip()}"
@@ -446,8 +443,8 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Use when you only need a portion of a large file — avoids context overflow.
         Line numbers are 1-based. Returns lines with line numbers prefixed.
         """
-        full_path = (CODEBASE_PATH / filepath).resolve()
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        full_path = (_project_dir / filepath).resolve()
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
         if not full_path.is_file():
             return f"Error: File '{filepath}' not found."
@@ -468,11 +465,10 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Use for complex patterns like 'def .*async', 'TODO|FIXME|HACK', etc.
         Returns matching lines with file paths and line numbers.
         """
-        import os
         import re as re_mod
-        full_path = CODEBASE_PATH if dir_path == "." else (CODEBASE_PATH / dir_path)
+        full_path = _project_dir if dir_path == "." else (_project_dir / dir_path)
         full_path = full_path.resolve()
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
 
         try:
@@ -491,7 +487,7 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
                         try:
                             for i, line in enumerate(fpath.read_text("utf-8", "replace").splitlines()):
                                 if compiled.search(line):
-                                    rel_path = fpath.relative_to(CODEBASE_PATH)
+                                    rel_path = fpath.relative_to(_project_dir)
                                     results.append(f"{rel_path}:{i+1}: {line.strip()[:120]}")
                                     if len(results) >= max_results:
                                         return f"Found {len(results)}+ matches (truncated):\n" + "\n".join(results)
@@ -509,10 +505,9 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Unlike find_definition which finds where something is declared, this finds where it's used.
         Returns file paths, line numbers, and the line content.
         """
-        import os
-        full_path = CODEBASE_PATH if dir_path == "." else (CODEBASE_PATH / dir_path)
+        full_path = _project_dir if dir_path == "." else (_project_dir / dir_path)
         full_path = full_path.resolve()
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
 
         results = []
@@ -526,7 +521,7 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
                         try:
                             for i, line in enumerate(fpath.read_text("utf-8", "replace").splitlines()):
                                 if symbol_name in line:
-                                    rel_path = fpath.relative_to(CODEBASE_PATH)
+                                    rel_path = fpath.relative_to(_project_dir)
                                     results.append(f"{rel_path}:{i+1}: {line.strip()[:120]}")
                                     if len(results) >= 40:
                                         return f"Found {len(results)}+ references (truncated):\n" + "\n".join(results)
@@ -546,17 +541,14 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         """
         cmd = ["git", "diff", "--stat", "-p", ref]
         if filepath:
-            full_path = (CODEBASE_PATH / filepath).resolve()
-            if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+            full_path = (_project_dir / filepath).resolve()
+            if not str(full_path).startswith(str(_project_dir.resolve())):
                 return "Error: Path traversal not allowed."
             cmd.extend(["--", filepath])
         try:
             result = subprocess.run(
-                cmd,
-                cwd=str(CODEBASE_PATH),
-                capture_output=True,
-                text=True,
-                timeout=15,
+                cmd, cwd=str(_project_dir),
+                capture_output=True, text=True, timeout=15,
             )
             if result.returncode != 0:
                 return f"Git error: {result.stderr.strip()}"
@@ -576,28 +568,22 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Searches both commit messages (-grep) and code changes (-S).
         """
         results = []
-        # Search commit messages
         try:
             msg_result = subprocess.run(
                 ["git", "log", f"-{max_commits}", "--pretty=format:%h %ai %s", f"--grep={search_term}", "-i"],
-                cwd=str(CODEBASE_PATH),
-                capture_output=True,
-                text=True,
-                timeout=10,
+                cwd=str(_project_dir),
+                capture_output=True, text=True, timeout=10,
             )
             if msg_result.stdout.strip():
                 results.append("Commits mentioning '" + search_term + "':\n" + msg_result.stdout.strip())
         except Exception:
             pass
 
-        # Search code changes (pickaxe)
         try:
             code_result = subprocess.run(
                 ["git", "log", f"-{max_commits}", "--pretty=format:%h %ai %s", f"-S{search_term}"],
-                cwd=str(CODEBASE_PATH),
-                capture_output=True,
-                text=True,
-                timeout=10,
+                cwd=str(_project_dir),
+                capture_output=True, text=True, timeout=10,
             )
             if code_result.stdout.strip():
                 results.append("Commits changing code with '" + search_term + "':\n" + code_result.stdout.strip())
@@ -613,8 +599,8 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         """Get stats about a file: line count, size, last modified, language.
         Use to quickly assess file complexity and recency.
         """
-        full_path = (CODEBASE_PATH / filepath).resolve()
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        full_path = (_project_dir / filepath).resolve()
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
         if not full_path.is_file():
             return f"Error: File '{filepath}' not found."
@@ -635,7 +621,6 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
                 f"Extension: {full_path.suffix}",
             ]
 
-            # Count imports, classes, functions (rough)
             import_count = sum(1 for l in lines if l.strip().startswith(("import ", "from ", "#include", "use ", "require")))
             class_count = sum(1 for l in lines if any(l.strip().startswith(k) for k in ("class ", "struct ", "enum ", "interface ", "trait ")))
             func_count = sum(1 for l in lines if any(l.strip().startswith(k) for k in ("def ", "func ", "fn ", "function ", "async def ", "pub fn ")))
@@ -654,11 +639,10 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Use when you know part of a filename but not its full path.
         Example: 'auth' finds auth_service.py, AuthController.java, etc.
         """
-        import os
         pattern_lower = filename_pattern.lower()
         results = []
         try:
-            for root, dirs, files in os.walk(CODEBASE_PATH):
+            for root, dirs, files in os.walk(_project_dir):
                 dirs[:] = [d for d in dirs if d not in {
                     ".git", "node_modules", "__pycache__", "build", "dist",
                     "target", ".dart_tool", ".next", "venv", ".venv",
@@ -666,7 +650,7 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
                 for file in files:
                     if pattern_lower in file.lower():
                         fpath = Path(root) / file
-                        rel_path = fpath.relative_to(CODEBASE_PATH)
+                        rel_path = fpath.relative_to(_project_dir)
                         results.append(str(rel_path))
                         if len(results) >= 30:
                             return f"Found {len(results)}+ files (truncated):\n" + "\n".join(results)
@@ -682,19 +666,17 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         Returns callers (files that reference this function) and callees
         (functions/methods invoked inside the given function's body).
         """
-        full_path = (CODEBASE_PATH / filepath).resolve()
-        if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+        full_path = (_project_dir / filepath).resolve()
+        if not str(full_path).startswith(str(_project_dir.resolve())):
             return "Error: Path traversal not allowed."
         if not full_path.is_file():
             return f"Error: File '{filepath}' not found."
 
         parts = []
 
-        # Find callers via import graph + grep
         importers = graph.get_importers(filepath)
         callers = []
-        import os
-        for root, _, files in os.walk(CODEBASE_PATH):
+        for root, _, files in os.walk(_project_dir):
             if any(x in root for x in [".git", "node_modules", "__pycache__", "build", "dist", "target"]):
                 continue
             for file in files:
@@ -705,7 +687,7 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
                     try:
                         content = fpath.read_text("utf-8", "replace")
                         if function_name in content:
-                            rel = fpath.relative_to(CODEBASE_PATH)
+                            rel = fpath.relative_to(_project_dir)
                             for i, line in enumerate(content.splitlines()):
                                 if function_name in line:
                                     callers.append(f"  {rel}:{i+1}: {line.strip()[:100]}")
@@ -720,13 +702,11 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         else:
             parts.append(f"No callers found for {function_name}")
 
-        # Find callees by reading the function body
         try:
             import re as re_mod
             content = full_path.read_text("utf-8", "replace")
             lines = content.splitlines()
 
-            # Find function start
             func_start = -1
             for i, line in enumerate(lines):
                 if function_name in line and any(k in line for k in ("def ", "func ", "fn ", "function ", "void ", "class ")):
@@ -734,11 +714,8 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
                     break
 
             if func_start >= 0:
-                # Grab ~50 lines of the function body
                 body = "\n".join(lines[func_start:func_start + 50])
-                # Extract function calls (word followed by parenthesis)
                 callees = set(re_mod.findall(r'\b([a-zA-Z_]\w+)\s*\(', body))
-                # Filter out common keywords
                 keywords = {"if", "for", "while", "switch", "catch", "return", "print", "throw", function_name}
                 callees -= keywords
                 if callees:
@@ -756,19 +733,13 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         - 'error handling logic'
         - 'user authentication flow'
         - 'database connection setup'
-        - 'how are API responses formatted'
         Returns the most semantically relevant code chunks with file paths.
         """
-        if not pool:
+        if not collection:
             return "Error: Vector database not available."
         try:
             query_vector = embed_text(query)
-            import asyncio
-            loop = asyncio.new_event_loop()
-            results = loop.run_until_complete(
-                semantic_search(pool, query_vector, top_k=top_k)
-            )
-            loop.close()
+            results = query_similar(collection, query_vector, n_results=top_k)
             if not results:
                 return f"No semantically relevant code found for: '{query}'"
             parts = []
@@ -796,29 +767,20 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
         that serves a similar purpose elsewhere in the codebase.
         Provide the file path and optionally a chunk index (default 0 = first chunk).
         """
-        if not pool:
+        if not collection:
             return "Error: Vector database not available."
         try:
-            # Get the target chunk's code to use as the search query
-            full_path = (CODEBASE_PATH / filepath).resolve()
-            if not str(full_path).startswith(str(CODEBASE_PATH.resolve())):
+            full_path = (_project_dir / filepath).resolve()
+            if not str(full_path).startswith(str(_project_dir.resolve())):
                 return "Error: Path traversal not allowed."
             if not full_path.is_file():
                 return f"Error: File '{filepath}' not found."
 
             content = full_path.read_text(encoding="utf-8", errors="replace")
-            # Use first 800 chars as the semantic query
             query_text = content[:800]
             query_vector = embed_text(query_text)
 
-            import asyncio
-            loop = asyncio.new_event_loop()
-            results = loop.run_until_complete(
-                semantic_search(pool, query_vector, top_k=top_k + 2)
-            )
-            loop.close()
-
-            # Filter out chunks from the same file
+            results = query_similar(collection, query_vector, n_results=top_k + 2)
             results = [r for r in results if r.get('filename') != filepath][:top_k]
 
             if not results:
@@ -861,44 +823,36 @@ def _get_tools(graph: ImportGraph, profile: LanguageProfile | None = None, pool:
 
 
 async def stream_rag_response(
-    pool: Any,
+    collection: Any,
     graph: ImportGraph,
     query: str,
     mode: str,
-    model: str = DEFAULT_MODEL,
+    model: str = "gemini-2.5-flash",
     history: list[dict[str, str]] | None = None,
     profile: LanguageProfile | None = None,
+    project_dir: Path | None = None,
+    gemini_api_key: str = "",
 ) -> AsyncGenerator[dict[str, Any], None]:
-    """Async generator that retrieves context and streams a Gemini response.
-
-    Yields dicts of one of three shapes:
-    - ``{"type": "token",  "content": "<text>"}``
-    - ``{"type": "done",   "sources": [...], "stats": {...}}``
-    - ``{"type": "error",  "content": "<message>"}``
-    """
+    """Async generator that retrieves context and streams a Gemini response."""
     if history is None:
         history = []
 
+    _project_dir = project_dir or Path.cwd()
     highlight_language = profile.highlight_language if profile else "text"
 
-    # --- Status: retrieving ---
     yield {"type": "status", "stage": "retrieving"}
 
-    # 1. Retrieve relevant chunks.
     try:
-        chunks = await retrieve_for_mode(pool, graph, query, mode, profile=profile)
+        chunks = await retrieve_for_mode(collection, graph, query, mode, profile=profile)
     except Exception as exc:
         yield {"type": "error", "content": f"Retrieval failed: {exc}"}
         return
 
-    # --- Status: context found ---
     unique_files = len(set(c.get("filename", "") for c in chunks))
     yield {"type": "status", "stage": "context_found", "chunks": len(chunks), "files": unique_files}
 
-    # 2. Load static context (CLAUDE.md + memory).
-    claude_md, memory_content = _load_static_context()
+    claude_md, memory_content = _load_static_context(_project_dir)
 
-    # 3. Assemble prompt.
     prompt = assemble_prompt(
         mode=mode,
         query=query,
@@ -910,7 +864,6 @@ async def stream_rag_response(
         highlight_language=highlight_language,
     )
 
-    # 4. Build LangChain messages.
     messages: list[Any] = [SystemMessage(content=prompt["system"])]
 
     for turn in prompt["history"]:
@@ -929,22 +882,20 @@ async def stream_rag_response(
 
     messages.append(HumanMessage(content=human_content))
 
-    # 5. Stream from Gemini.
     sources = [
         {"filename": c.get("filename", ""), "priority": c.get("priority", "semantic")}
         for c in chunks
     ]
 
     try:
-        tools = _get_tools(graph, profile, pool)
+        tools = _get_tools(graph, profile, collection, _project_dir)
         llm = ChatGoogleGenerativeAI(
             model=model,
-            google_api_key=GEMINI_API_KEY,
+            google_api_key=gemini_api_key,
             streaming=True,
         )
         llm_with_tools = llm.bind_tools(tools)
 
-        # --- Status: thinking ---
         yield {"type": "status", "stage": "thinking"}
 
         MAX_STEPS = 5
@@ -989,7 +940,6 @@ async def stream_rag_response(
                         args = tool_call["args"]
                         tool_id = tool_call["id"]
 
-                        # --- Status: tool call ---
                         args_summary = ", ".join(f"{k}={repr(v)[:40]}" for k, v in args.items()) if args else ""
                         yield {"type": "status", "stage": "tool_call", "tool": tool_name, "args": args_summary}
 
@@ -1006,7 +956,6 @@ async def stream_rag_response(
                         yield {"type": "status", "stage": "tool_done", "tool": tool_name}
                         messages.append(ToolMessage(content=result_str, tool_call_id=tool_id))
 
-                    # After tool calls, LLM will generate again
                     first_token = True
 
             if not has_tool_calls:
