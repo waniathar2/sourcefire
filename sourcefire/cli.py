@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-open", action="store_true", help="Don't auto-open browser")
     parser.add_argument("--reinit", action="store_true", help="Regenerate .sourcefire/config.toml via LLM")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
+    parser.add_argument("--uninstall", action="store_true", help="Remove global ~/.sourcefire/ config directory")
     return parser.parse_args()
 
 
@@ -234,6 +235,12 @@ def main() -> None:
     """Sourcefire CLI entry point."""
     args = parse_args()
 
+    # Handle --uninstall
+    if args.uninstall:
+        from sourcefire.global_config import uninstall
+        uninstall()
+        return
+
     project_dir, sourcefire_dir = discover_project()
 
     # Acquire lock
@@ -242,10 +249,13 @@ def main() -> None:
         print("Error: Another sourcefire instance is already running for this project.")
         sys.exit(1)
 
-    # Check for API key — prompt interactively if missing
-    api_key = os.getenv("GEMINI_API_KEY", "")
+    # Check for API key: env var -> ~/.sourcefire/config.toml -> prompt
+    from sourcefire.global_config import get_api_key, save_api_key, get_global_dir
+
+    api_key = get_api_key()
     if not api_key:
-        print("No GEMINI_API_KEY found in environment.")
+        print("No Gemini API key found.")
+        print(f"It will be saved to {get_global_dir() / 'config.toml'} (global, works across all projects).\n")
         try:
             api_key = input("Enter your Gemini API key: ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -258,12 +268,8 @@ def main() -> None:
             release_lock(lock_fd, sourcefire_dir / ".lock")
             sys.exit(1)
 
-        # Persist to .env in project root
-        env_path = project_dir / ".env"
-        with open(env_path, "a") as f:
-            f.write(f"\nGEMINI_API_KEY={api_key}\n")
-        os.environ["GEMINI_API_KEY"] = api_key
-        print(f"API key saved to {env_path}")
+        save_api_key(api_key)
+        print(f"API key saved to {get_global_dir() / 'config.toml'}\n")
 
     # Auto-init or reinit
     needs_init = not sourcefire_dir.exists() or not (sourcefire_dir / "config.toml").exists()
