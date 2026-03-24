@@ -270,28 +270,28 @@ def main() -> None:
 
     project_dir, sourcefire_dir = discover_project()
 
-    # Safety check: warn if running in a broad directory (home, /, etc.)
-    needs_init = not sourcefire_dir.exists() or not (sourcefire_dir / "config.toml").exists()
-    if needs_init:
-        dangerous_dirs = {
-            Path.home().resolve(),
-            Path("/").resolve(),
-        }
-        # Also flag common broad directories
-        for name in ("Documents", "Downloads", "Desktop"):
-            dangerous_dirs.add((Path.home() / name).resolve())
+    # Safety check: block broad directories (home, /, Documents, etc.)
+    dangerous_dirs = {
+        Path.home().resolve(),
+        Path("/").resolve(),
+    }
+    for name in ("Documents", "Downloads", "Desktop", "Library", "Applications",
+                 "Pictures", "Music", "Movies", "Public"):
+        dangerous_dirs.add((Path.home() / name).resolve())
 
-        if project_dir.resolve() in dangerous_dirs:
-            print(f"\n  WARNING: You are about to index: {project_dir.resolve()}")
-            print("  This is a broad directory and may index thousands of files.\n")
-            try:
-                confirm = input("  Do you trust this folder? (yes/no): ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                print("\nAborted.")
-                sys.exit(1)
-            if confirm not in ("yes", "y"):
-                print("Aborted. Run sourcefire from a project directory instead.")
-                sys.exit(0)
+    resolved_project = project_dir.resolve()
+    if resolved_project in dangerous_dirs:
+        print(f"\n  WARNING: You are about to index: {resolved_project}")
+        print("  This is a broad directory — it will index system files, app data, and more.\n")
+        print("  Please check twice. This is NOT a project directory.\n")
+        try:
+            confirm = input("  Do you trust this folder? (yes/no): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            sys.exit(1)
+        if confirm not in ("yes", "y"):
+            print("Aborted. cd into a project directory and run sourcefire there.")
+            sys.exit(0)
 
     # Acquire lock
     lock_fd = acquire_lock(sourcefire_dir / ".lock")

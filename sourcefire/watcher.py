@@ -16,8 +16,24 @@ from sourcefire.indexer.pipeline import index_files
 from sourcefire.retriever.graph import ImportGraph
 
 
+# Always skip these regardless of config
+_ALWAYS_EXCLUDE = (
+    ".sourcefire/",
+    ".git/",
+    "node_modules/",
+    "__pycache__/",
+    ".venv/",
+    "venv/",
+)
+
+
 def _should_watch(rel_path: str, config: SourcefireConfig) -> bool:
     """Return True if the file matches include patterns and not exclude patterns."""
+    # Hard excludes — never watch these
+    for prefix in _ALWAYS_EXCLUDE:
+        if rel_path.startswith(prefix):
+            return False
+
     for pattern in config.exclude:
         if fnmatch.fnmatch(rel_path, pattern):
             return False

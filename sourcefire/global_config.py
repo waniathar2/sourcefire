@@ -1,4 +1,4 @@
-"""Global Sourcefire configuration — stored in ~/.sourcefire/
+"""Global Sourcefire configuration — stored in ~/.config/sourcefire/
 
 This directory holds user-level settings (API keys, preferences) that
 apply across all projects. Separate from the per-project .sourcefire/
@@ -20,13 +20,13 @@ import tomli_w
 def get_global_dir() -> Path:
     """Return the global Sourcefire config directory.
 
-    - macOS/Linux: ~/.sourcefire/
+    - macOS/Linux: ~/.config/sourcefire/
     - Windows: %APPDATA%/sourcefire/
     """
     if platform.system() == "Windows":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
         return base / "sourcefire"
-    return Path.home() / ".sourcefire"
+    return Path.home() / ".config" / "sourcefire"
 
 
 def get_global_config_path() -> Path:

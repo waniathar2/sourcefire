@@ -1,6 +1,6 @@
 [project]
 name = "sourcefire"
-version = "0.3.1"
+version = "0.3.2"
 description = "Get instant context on any codebase. One command to index, ask questions in plain English, get answers grounded in actual code."
 readme = "README.md"
 license = {text = "MIT"}
