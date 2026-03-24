@@ -30,7 +30,7 @@ def reset_collection(client: chromadb.ClientAPI) -> chromadb.Collection:
     """Delete and recreate the collection (for full re-index)."""
     try:
         client.delete_collection(COLLECTION_NAME)
-    except ValueError:
+    except Exception:
         pass
     return get_collection(client)
 

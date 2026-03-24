@@ -150,19 +150,23 @@ async def lifespan(app: FastAPI):
     lang_name = profile.language if profile else "generic"
     print(f"[sourcefire] Language: {lang_name}")
 
-    # Create ChromaDB client
-    client = create_client(config.chroma_dir)
-    collection = get_collection(client)
+    # Create ChromaDB client — nuke directory on corruption
+    def _init_chroma():
+        c = create_client(config.chroma_dir)
+        coll = get_collection(c)
+        coll.count()  # verify DB is accessible
+        return c, coll
+
+    try:
+        client, collection = _init_chroma()
+    except Exception:
+        import shutil
+        print("[sourcefire] ChromaDB corrupted — deleting and rebuilding...")
+        shutil.rmtree(config.chroma_dir, ignore_errors=True)
+        client, collection = _init_chroma()
 
     # Determine if this is a first run (empty collection)
-    try:
-        existing_count = collection.count()
-    except Exception:
-        # Corrupted or stale ChromaDB — reset
-        print("[sourcefire] ChromaDB state is corrupted — resetting...")
-        from sourcefire.db import reset_collection
-        collection = reset_collection(client)
-        existing_count = 0
+    existing_count = collection.count()
 
     is_first_run = existing_count == 0
 

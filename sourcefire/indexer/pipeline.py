@@ -262,7 +262,7 @@ def run_indexing(
             print("[pipeline] Index is up to date.")
             return {
                 "files": len(all_disk_files), "chunks": collection.count(), "edges": 0,
-                "language": lang_name, "import_edges": {},
+                "language": lang_name, "import_edges": {}, "collection": collection,
             }
 
         print(f"[pipeline] {len(changed)} changed, {len(deleted)} deleted files.")
@@ -296,7 +296,7 @@ def run_indexing(
     if not all_chunks:
         return {
             "files": len(all_disk_files), "chunks": 0, "edges": 0,
-            "language": lang_name, "import_edges": file_imports,
+            "language": lang_name, "import_edges": file_imports, "collection": collection,
         }
 
     # Embed
