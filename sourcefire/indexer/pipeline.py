@@ -1,9 +1,8 @@
 """Full indexing pipeline for Sourcefire.
 
 Scans a codebase, chunks files (AST-aware when a language profile exists,
-simple split otherwise), embeds all chunks, and upserts them into the
-pgvector table. Also populates the import_graph table for graph-augmented
-retrieval.
+simple split otherwise), embeds all chunks, and inserts them into ChromaDB.
+Also builds the import graph for graph-augmented retrieval.
 """
 
 from __future__ import annotations
@@ -12,66 +11,13 @@ import fnmatch
 from pathlib import Path
 from typing import Any
 
-from psycopg_pool import ConnectionPool
+import chromadb
 
-from sourcefire.config import (
-    CHUNK_OVERLAP,
-    CHUNK_SIZE,
-    CODEBASE_PATH,
-    EXTRA_EXCLUDE_PATTERNS,
-    EXTRA_INCLUDE_PATTERNS,
-    LANGUAGE_OVERRIDE,
-)
+from sourcefire.config import SourcefireConfig
+from sourcefire.db import add_chunks, reset_collection, delete_file_chunks, get_indexed_files, get_stored_mtimes
 from sourcefire.indexer.embeddings import embed_batch
 from sourcefire.indexer.language_profiles import LanguageProfile, get_profile, get_profile_for_extension
 from sourcefire.indexer.metadata import chunk_source_file, extract_metadata
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-EMBEDDING_DIM: int = 384
-TABLE_NAME: str = "code_embeddings"
-
-# ---------------------------------------------------------------------------
-# Schema DDL
-# ---------------------------------------------------------------------------
-
-_SCHEMA_SQL = f"""
-CREATE EXTENSION IF NOT EXISTS vector;
-
-CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
-    id SERIAL PRIMARY KEY,
-    filename TEXT NOT NULL,
-    location TEXT NOT NULL,
-    code TEXT NOT NULL,
-    feature TEXT DEFAULT '',
-    layer TEXT DEFAULT '',
-    file_type TEXT DEFAULT '',
-    embedding vector({EMBEDDING_DIM}) NOT NULL,
-    UNIQUE(filename, location)
-);
-
-CREATE INDEX IF NOT EXISTS idx_code_embeddings_filename
-    ON {TABLE_NAME} (filename);
-
-CREATE INDEX IF NOT EXISTS idx_code_embeddings_feature
-    ON {TABLE_NAME} (feature);
-
-CREATE TABLE IF NOT EXISTS import_graph (
-    source_path TEXT NOT NULL,
-    target_path TEXT NOT NULL,
-    PRIMARY KEY (source_path, target_path)
-);
-"""
-
-# The ivfflat index is created separately because it requires enough rows to be
-# present first (at least lists * 10 rows).  We attempt it after upsert and
-# swallow errors gracefully.
-_IVFFLAT_SQL = f"""
-CREATE INDEX IF NOT EXISTS idx_code_embeddings_embedding
-    ON {TABLE_NAME} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 20);
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +37,6 @@ def _parse_gitignore(codebase_path: Path) -> list[str]:
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            # Normalize: remove leading slash, add ** prefix for directory patterns
             if line.startswith("/"):
                 line = line[1:]
             if line.endswith("/"):
@@ -122,8 +67,8 @@ def _match_patterns(rel_path: str, patterns: list[str]) -> bool:
 
 def _chunk_plain_text(
     text: str,
-    chunk_size: int = CHUNK_SIZE,
-    chunk_overlap: int = CHUNK_OVERLAP,
+    chunk_size: int = 1000,
+    chunk_overlap: int = 300,
 ) -> list[str]:
     """Split *text* into overlapping chunks of at most *chunk_size* characters."""
     if len(text) <= chunk_size:
@@ -148,23 +93,26 @@ def _chunk_plain_text(
 
 def _collect_files(
     codebase_path: Path,
+    config: SourcefireConfig,
     profile: LanguageProfile | None,
 ) -> list[Path]:
-    """Return all files under *codebase_path* that pass include/exclude filters."""
-    # Build include patterns from profile + extra config
-    include_patterns: list[str] = []
-    if profile:
-        include_patterns.extend(profile.include_patterns)
-    include_patterns.extend(EXTRA_INCLUDE_PATTERNS)
+    """Return all files under *codebase_path* that pass include/exclude filters.
 
-    # Build exclude patterns from profile + extra config + .gitignore
-    exclude_patterns: list[str] = []
-    if profile:
-        exclude_patterns.extend(profile.exclude_patterns)
-    exclude_patterns.extend(EXTRA_EXCLUDE_PATTERNS)
+    Config patterns are authoritative. If config has include patterns, those
+    are used. Otherwise falls back to language profile patterns.
+    """
+    include_patterns: list[str] = list(config.include) if config.include else []
+    exclude_patterns: list[str] = list(config.exclude) if config.exclude else []
+
+    # If no config patterns, fall back to profile
+    if not include_patterns and profile:
+        include_patterns = list(profile.include_patterns)
+    if not exclude_patterns and profile:
+        exclude_patterns = list(profile.exclude_patterns)
+
+    # Always exclude .gitignore patterns
     exclude_patterns.extend(_parse_gitignore(codebase_path))
 
-    # If no include patterns at all, use a broad default
     if not include_patterns:
         include_patterns = ["**/*"]
 
@@ -177,7 +125,6 @@ def _collect_files(
             if not _match_patterns(rel, exclude_patterns):
                 matched.append(file_path)
 
-    # Deduplicate while preserving order.
     seen: set[Path] = set()
     unique: list[Path] = []
     for p in matched:
@@ -197,44 +144,31 @@ def _chunks_for_file(
     file_path: Path,
     codebase_path: Path,
     profile: LanguageProfile | None,
+    chunk_size: int = 1000,
 ) -> list[dict[str, Any]]:
-    """Return a list of chunk dicts for *file_path*.
-
-    Each dict has:
-        filename  : str — relative POSIX path
-        location  : str — "<filename>:<chunk_index>"
-        code      : str — chunk text
-        feature   : str
-        layer     : str
-        file_type : str
-    """
+    """Return a list of chunk dicts for *file_path*."""
     rel = file_path.relative_to(codebase_path).as_posix()
     source = file_path.read_text(encoding="utf-8", errors="replace")
 
-    # Determine the file-specific profile (may differ in multi-language codebases)
     file_profile = get_profile_for_extension(file_path.suffix) or profile
 
     if file_profile and file_path.suffix in [e for e in file_profile.file_extensions]:
-        # Language-aware chunking
-        raw_chunks = chunk_source_file(source, rel, file_profile, chunk_size=CHUNK_SIZE)
+        raw_chunks = chunk_source_file(source, rel, file_profile, chunk_size=chunk_size)
         chunks_out: list[dict[str, Any]] = []
         for idx, chunk in enumerate(raw_chunks):
             meta = chunk["metadata"]
-            chunks_out.append(
-                {
-                    "filename": rel,
-                    "location": f"{rel}:{idx}",
-                    "code": chunk["text"],
-                    "feature": meta.get("feature", ""),
-                    "layer": meta.get("layer", ""),
-                    "file_type": meta.get("file_type", ""),
-                }
-            )
+            chunks_out.append({
+                "filename": rel,
+                "location": f"{rel}:{idx}",
+                "code": chunk["text"],
+                "feature": meta.get("feature", ""),
+                "layer": meta.get("layer", ""),
+                "file_type": meta.get("file_type", ""),
+            })
         return chunks_out
     else:
-        # No profile or non-code file: plain text split + path-based metadata
         meta = extract_metadata("", rel, file_profile)
-        raw_texts = _chunk_plain_text(source)
+        raw_texts = _chunk_plain_text(source, chunk_size=chunk_size)
         return [
             {
                 "filename": rel,
@@ -249,135 +183,102 @@ def _chunks_for_file(
 
 
 # ---------------------------------------------------------------------------
-# Database helpers
+# Public entry points
 # ---------------------------------------------------------------------------
 
 
-def _create_schema(pool: ConnectionPool) -> None:
-    """Create tables and basic indexes (idempotent)."""
-    with pool.connection() as conn:
-        conn.execute(_SCHEMA_SQL)
-        conn.commit()
-
-
-def _try_create_ivfflat_index(pool: ConnectionPool) -> None:
-    """Attempt to create the ivfflat index; log and continue on failure."""
-    try:
-        with pool.connection() as conn:
-            conn.execute(_IVFFLAT_SQL)
-            conn.commit()
-    except Exception as exc:  # noqa: BLE001
-        print(
-            f"[pipeline] ivfflat index creation skipped (not enough rows?): {exc}"
-        )
-
-
-def _upsert_chunks(
-    pool: ConnectionPool,
-    chunks: list[dict[str, Any]],
-    embeddings: list[list[float]],
-) -> None:
-    """Upsert *chunks* + *embeddings* into the code_embeddings table."""
-    upsert_sql = f"""
-        INSERT INTO {TABLE_NAME}
-            (filename, location, code, feature, layer, file_type, embedding)
-        VALUES
-            (%(filename)s, %(location)s, %(code)s,
-             %(feature)s, %(layer)s, %(file_type)s,
-             %(embedding)s::vector)
-        ON CONFLICT (filename, location) DO UPDATE SET
-            code      = EXCLUDED.code,
-            feature   = EXCLUDED.feature,
-            layer     = EXCLUDED.layer,
-            file_type = EXCLUDED.file_type,
-            embedding = EXCLUDED.embedding;
-    """
-    rows = [
-        {**chunk, "embedding": str(emb)}
-        for chunk, emb in zip(chunks, embeddings)
-    ]
-    with pool.connection() as conn:
-        with conn.cursor() as cur:
-            cur.executemany(upsert_sql, rows)
-        conn.commit()
-
-
-def _build_import_graph(
-    pool: ConnectionPool,
-    file_imports: dict[str, list[str]],
-) -> int:
-    """Populate the import_graph table from *file_imports*. Returns edge count."""
-    from sourcefire.retriever.graph import ImportGraph
-
-    graph = ImportGraph.from_import_map(file_imports)
-
-    rows: list[dict[str, str]] = []
-    for source, targets in graph._forward.items():  # noqa: SLF001
-        for target in targets:
-            rows.append({"source_path": source, "target_path": target})
-
-    if not rows:
-        return 0
-
-    upsert_sql = """
-        INSERT INTO import_graph (source_path, target_path)
-        VALUES (%(source_path)s, %(target_path)s)
-        ON CONFLICT DO NOTHING;
-    """
-    with pool.connection() as conn:
-        with conn.cursor() as cur:
-            cur.executemany(upsert_sql, rows)
-        conn.commit()
-
-    return len(rows)
-
-
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
-
-
-def run_indexing(pool: ConnectionPool) -> dict[str, Any]:
-    """Run the full indexing pipeline.
+def run_indexing(
+    collection: chromadb.Collection,
+    config: SourcefireConfig,
+    client: chromadb.ClientAPI | None = None,
+    full: bool = True,
+) -> dict[str, Any]:
+    """Run the indexing pipeline.
 
     Args:
-        pool: An open psycopg ConnectionPool pointed at the target database.
+        collection: ChromaDB collection to write to.
+        config: Sourcefire configuration.
+        client: ChromaDB client (needed for full reset).
+        full: If True, reset collection and re-index everything.
+              If False, incremental — compare file mtimes and only
+              re-index changed/new files, delete removed files.
 
     Returns:
-        A stats dict with keys: ``files``, ``chunks``, ``edges``, ``language``.
+        A stats dict with keys: files, chunks, edges, language, import_edges.
     """
-    print(f"[pipeline] Scanning codebase at: {CODEBASE_PATH}")
+    codebase_path = config.project_dir
+    print(f"[pipeline] Scanning codebase at: {codebase_path}")
 
-    # Detect language and get profile
-    profile = get_profile(CODEBASE_PATH, LANGUAGE_OVERRIDE)
+    language_override = config.language if config.language != "auto" else None
+    profile = get_profile(codebase_path, language_override)
     lang_name = profile.language if profile else "generic"
     print(f"[pipeline] Detected language: {lang_name}")
 
-    # 1. Ensure schema exists.
-    _create_schema(pool)
-    print("[pipeline] Schema ready.")
+    # Collect all files on disk
+    all_disk_files = _collect_files(codebase_path, config, profile)
+    print(f"[pipeline] Found {len(all_disk_files)} files to index.")
 
-    # 2. Flush old data — ensures no stale chunks from a different codebase.
-    with pool.connection() as conn:
-        conn.execute(f"TRUNCATE {TABLE_NAME}")
-        conn.execute("TRUNCATE import_graph")
-        conn.commit()
-    print("[pipeline] Cleared previous index.")
+    if not all_disk_files:
+        print("[pipeline] Error: No source files found matching the configured patterns.")
+        print("Run `sourcefire --reinit` to regenerate patterns, or edit .sourcefire/config.toml manually.")
+        return {
+            "files": 0, "chunks": 0, "edges": 0,
+            "language": lang_name, "import_edges": {},
+        }
 
-    # 3. Collect files.
-    files = _collect_files(CODEBASE_PATH, profile)
-    print(f"[pipeline] Found {len(files)} files to index.")
+    # Determine which files to process
+    if full and client:
+        collection = reset_collection(client)
+        print("[pipeline] Collection reset for full re-index.")
+        files_to_index = all_disk_files
+    elif not full:
+        # Incremental: compare mtimes
+        indexed_files = get_indexed_files(collection)
+        stored_mtimes = get_stored_mtimes(collection)
 
-    # 3. Produce chunks and collect import maps in one pass.
+        current_files: dict[str, Path] = {}
+        for f in all_disk_files:
+            rel = f.relative_to(codebase_path).as_posix()
+            current_files[rel] = f
+
+        # Find changed/new files
+        changed: list[Path] = []
+        for rel, f in current_files.items():
+            stored_mtime = stored_mtimes.get(rel, 0.0)
+            if rel not in indexed_files or f.stat().st_mtime > stored_mtime:
+                changed.append(f)
+
+        # Find deleted files
+        deleted = indexed_files - set(current_files.keys())
+        for rel in deleted:
+            delete_file_chunks(collection, rel)
+
+        if not changed and not deleted:
+            print("[pipeline] Index is up to date.")
+            return {
+                "files": len(all_disk_files), "chunks": collection.count(), "edges": 0,
+                "language": lang_name, "import_edges": {},
+            }
+
+        print(f"[pipeline] {len(changed)} changed, {len(deleted)} deleted files.")
+        files_to_index = changed
+
+        # Delete old chunks for changed files before re-inserting
+        for f in changed:
+            rel = f.relative_to(codebase_path).as_posix()
+            delete_file_chunks(collection, rel)
+    else:
+        files_to_index = all_disk_files
+
+    # Produce chunks and collect imports
     all_chunks: list[dict[str, Any]] = []
     file_imports: dict[str, list[str]] = {}
 
-    for file_path in files:
-        rel = file_path.relative_to(CODEBASE_PATH).as_posix()
-        chunks = _chunks_for_file(file_path, CODEBASE_PATH, profile)
+    for file_path in files_to_index:
+        rel = file_path.relative_to(codebase_path).as_posix()
+        chunks = _chunks_for_file(file_path, codebase_path, profile, chunk_size=config.chunk_size)
         all_chunks.extend(chunks)
 
-        # Collect imports for files that have a matching language profile
         file_profile = get_profile_for_extension(file_path.suffix) or profile
         if file_profile and file_path.suffix in file_profile.file_extensions:
             source = file_path.read_text(encoding="utf-8", errors="replace")
@@ -388,30 +289,118 @@ def run_indexing(pool: ConnectionPool) -> dict[str, Any]:
     print(f"[pipeline] Produced {len(all_chunks)} chunks.")
 
     if not all_chunks:
-        return {"files": len(files), "chunks": 0, "edges": 0, "language": lang_name}
+        return {
+            "files": len(all_disk_files), "chunks": 0, "edges": 0,
+            "language": lang_name, "import_edges": file_imports,
+        }
 
-    # 4. Embed in one batch.
+    # Embed
     print("[pipeline] Embedding chunks...")
     texts = [c["code"] for c in all_chunks]
     embeddings = embed_batch(texts)
     print("[pipeline] Embeddings done.")
 
-    # 5. Upsert into pgvector table.
-    print("[pipeline] Upserting into database...")
-    _upsert_chunks(pool, all_chunks, embeddings)
-    print(f"[pipeline] Upserted {len(all_chunks)} chunks.")
+    # Build mtime lookup
+    file_mtimes: dict[str, str] = {}
+    for file_path in files_to_index:
+        rel = file_path.relative_to(codebase_path).as_posix()
+        file_mtimes[rel] = str(file_path.stat().st_mtime)
 
-    # 6. Try to create the ivfflat ANN index (requires >= 200 rows).
-    _try_create_ivfflat_index(pool)
+    # Insert into ChromaDB in batches
+    BATCH_SIZE = 5000
+    print("[pipeline] Inserting into ChromaDB...")
+    for i in range(0, len(all_chunks), BATCH_SIZE):
+        batch = all_chunks[i:i + BATCH_SIZE]
+        batch_emb = embeddings[i:i + BATCH_SIZE]
+        add_chunks(
+            collection,
+            ids=[c["location"] for c in batch],
+            documents=[c["code"] for c in batch],
+            embeddings=batch_emb,
+            metadatas=[
+                {
+                    "filename": c["filename"],
+                    "location": c["location"],
+                    "feature": c["feature"],
+                    "layer": c["layer"],
+                    "file_type": c["file_type"],
+                    "mtime": file_mtimes.get(c["filename"], "0"),
+                }
+                for c in batch
+            ],
+        )
+    print(f"[pipeline] Inserted {len(all_chunks)} chunks.")
 
-    # 7. Build import graph table.
-    print("[pipeline] Building import graph...")
-    edge_count = _build_import_graph(pool, file_imports)
-    print(f"[pipeline] Import graph: {edge_count} edges.")
+    edge_count = sum(len(v) for v in file_imports.values())
+    print(f"[pipeline] Import edges: {edge_count}")
 
     return {
-        "files": len(files),
+        "files": len(all_disk_files),
         "chunks": len(all_chunks),
         "edges": edge_count,
         "language": lang_name,
+        "import_edges": file_imports,
     }
+
+
+def index_files(
+    collection: chromadb.Collection,
+    file_paths: list[Path],
+    config: SourcefireConfig,
+    profile: LanguageProfile | None,
+) -> dict[str, list[str]]:
+    """Index specific files (for incremental re-indexing by the watcher).
+
+    Deletes existing chunks for each file, then re-chunks, embeds, and inserts.
+    Returns the import map for updated files.
+    """
+    codebase_path = config.project_dir
+    file_imports: dict[str, list[str]] = {}
+    all_chunks: list[dict[str, Any]] = []
+
+    for file_path in file_paths:
+        rel = file_path.relative_to(codebase_path).as_posix()
+        delete_file_chunks(collection, rel)
+
+        chunks = _chunks_for_file(file_path, codebase_path, profile, chunk_size=config.chunk_size)
+        all_chunks.extend(chunks)
+
+        file_profile = get_profile_for_extension(file_path.suffix) or profile
+        if file_profile and file_path.suffix in file_profile.file_extensions:
+            source = file_path.read_text(encoding="utf-8", errors="replace")
+            meta = extract_metadata(source, rel, file_profile)
+            if meta.get("imports"):
+                file_imports[rel] = meta["imports"]
+
+    if all_chunks:
+        texts = [c["code"] for c in all_chunks]
+        embeddings = embed_batch(texts)
+
+        file_mtimes: dict[str, str] = {}
+        for file_path in file_paths:
+            rel = file_path.relative_to(codebase_path).as_posix()
+            file_mtimes[rel] = str(file_path.stat().st_mtime)
+
+        BATCH_SIZE = 5000
+        for i in range(0, len(all_chunks), BATCH_SIZE):
+            batch = all_chunks[i:i + BATCH_SIZE]
+            batch_emb = embeddings[i:i + BATCH_SIZE]
+            add_chunks(
+                collection,
+                ids=[c["location"] for c in batch],
+                documents=[c["code"] for c in batch],
+                embeddings=batch_emb,
+                metadatas=[
+                    {
+                        "filename": c["filename"],
+                        "location": c["location"],
+                        "feature": c["feature"],
+                        "layer": c["layer"],
+                        "file_type": c["file_type"],
+                        "mtime": file_mtimes.get(c["filename"], "0"),
+                    }
+                    for c in batch
+                ],
+            )
+
+    return file_imports
