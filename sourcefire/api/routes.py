@@ -10,7 +10,6 @@ from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from sourcefire.api.models import QueryRequest, SourceResponse, StatusResponse
-from sourcefire.config import CODEBASE_PATH, GEMINI_API_KEY
 
 router = APIRouter(prefix="/api")
 
@@ -18,9 +17,11 @@ router = APIRouter(prefix="/api")
 # Module-level dependency state — set once at startup via init_dependencies()
 # ---------------------------------------------------------------------------
 
-_pool: Any = None
+_collection: Any = None
 _graph: Any = None
 _profile: Any = None
+_project_dir: Path | None = None
+_gemini_api_key: str = ""
 _index_status: dict[str, Any] = {
     "files_indexed": 0,
     "last_indexed": "never",
@@ -29,13 +30,22 @@ _index_status: dict[str, Any] = {
 }
 
 
-def init_dependencies(pool: Any, graph: Any, index_status: dict[str, Any], profile: Any = None) -> None:
+def init_dependencies(
+    collection: Any,
+    graph: Any,
+    index_status: dict[str, Any],
+    profile: Any = None,
+    project_dir: Path | None = None,
+    gemini_api_key: str = "",
+) -> None:
     """Inject shared dependencies from the application lifespan."""
-    global _pool, _graph, _index_status, _profile
-    _pool = pool
+    global _collection, _graph, _index_status, _profile, _project_dir, _gemini_api_key
+    _collection = collection
     _graph = graph
     _index_status = index_status
     _profile = profile
+    _project_dir = project_dir
+    _gemini_api_key = gemini_api_key
 
 
 # ---------------------------------------------------------------------------
@@ -94,23 +104,25 @@ def _detect_language(file_path: Path) -> str:
 @router.post("/query")
 async def query(request: QueryRequest) -> EventSourceResponse:
     """Stream a RAG response for the given query via Server-Sent Events."""
-    if not GEMINI_API_KEY:
+    if not _gemini_api_key:
         raise HTTPException(
             status_code=503,
-            detail="GEMINI_API_KEY is not configured. Set it in your .env file.",
+            detail="GEMINI_API_KEY is not configured.",
         )
 
     from sourcefire.chain.rag_chain import stream_rag_response
 
     async def _event_generator() -> AsyncGenerator[dict[str, str], None]:
         async for chunk in stream_rag_response(
-            pool=_pool,
+            collection=_collection,
             graph=_graph,
             query=request.query,
             mode=request.mode,
             model=request.model,
             history=request.history,
             profile=_profile,
+            project_dir=_project_dir,
+            gemini_api_key=_gemini_api_key,
         ):
             yield {"data": json.dumps(chunk)}
 
@@ -120,8 +132,11 @@ async def query(request: QueryRequest) -> EventSourceResponse:
 @router.get("/sources", response_model=SourceResponse)
 async def sources(path: str = Query(..., description="Relative path within the codebase")) -> SourceResponse:
     """Return the content and detected language of a source file."""
-    codebase_resolved = CODEBASE_PATH.resolve()
-    full_path = (CODEBASE_PATH / path).resolve()
+    if _project_dir is None:
+        raise HTTPException(status_code=503, detail="Project directory not initialized.")
+
+    codebase_resolved = _project_dir.resolve()
+    full_path = (_project_dir / path).resolve()
 
     if not str(full_path).startswith(str(codebase_resolved)):
         raise HTTPException(status_code=400, detail="Path traversal detected.")
