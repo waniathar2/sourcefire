@@ -1,8 +1,8 @@
-"""Vector search retriever for the Cravv Observatory RAG system.
+"""Vector search retriever for Sourcefire.
 
 Provides:
-- parse_file_references: extract lib/...dart file references from Flutter
-  stack traces and error messages.
+- parse_file_references: extract file references from stack traces and error
+  messages, driven by language profile patterns.
 - build_metadata_filter: build a SQL WHERE clause fragment for feature/filename
   filtering.
 - semantic_search: cosine similarity search against the code_embeddings table.
@@ -14,68 +14,54 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from src.config import RELEVANCE_THRESHOLD, TOP_K
-from src.indexer.pipeline import TABLE_NAME
+from sourcefire.config import RELEVANCE_THRESHOLD, TOP_K
+from sourcefire.indexer.pipeline import TABLE_NAME
 
 # ---------------------------------------------------------------------------
 # Stack trace / error message parsing
 # ---------------------------------------------------------------------------
 
-# Matches Flutter stack trace lines, e.g.:
-#   package:cravv/features/auth/presentation/providers/auth_notifier.dart:44:5
-# Capture group 1: path after "package:cravv/" (does NOT include "lib/")
-# Capture group 2: line number
-_PACKAGE_RE = re.compile(
-    r"package:[^/]+/((?:features|core|lib)[^\s:)]+\.dart)"
-    r":(\d+)"
-)
-
-# Matches direct lib/-prefixed references, e.g.:
-#   lib/core/network/dio_client.dart:18
-# Capture group 1: full path including "lib/"
-# Capture group 2: line number (optional — may not be present)
-_LIB_RE = re.compile(
-    r"\b(lib/[^\s:)]+\.dart)"
-    r"(?::(\d+))?"
-)
+# Compiled regex cache (populated on first call per profile)
+_COMPILED_FILE_REF_PATTERNS: dict[str, list[re.Pattern]] = {}
 
 
-def parse_file_references(text: str) -> list[dict[str, Any]]:
-    """Extract file references from Flutter stack traces and error messages.
+def parse_file_references(text: str, file_ref_patterns: list[str] | None = None) -> list[dict[str, Any]]:
+    """Extract file references from stack traces and error messages.
+
+    Args:
+        text: The text to parse (stack trace, error message, or query).
+        file_ref_patterns: Regex patterns from the language profile. Each pattern
+            should have group(1) = file path, group(2) = optional line number.
+            If None, a generic fallback is used.
 
     Returns a list of dicts, each with:
-        file : str  — relative path starting with "lib/" (e.g. "lib/core/...")
-        line : int  — line number (0 if not present in the source text)
-
-    Deduplication is applied: the first occurrence of each (file, line) pair
-    is kept; subsequent duplicates are dropped.
+        file : str  — relative file path
+        line : int  — line number (0 if not present)
     """
+    if not file_ref_patterns:
+        # Generic fallback: match any path-like reference with an extension
+        file_ref_patterns = [r"\b([\w./\\-]+\.\w+)(?::(\d+))?"]
+
+    # Get or compile patterns
+    cache_key = str(file_ref_patterns)
+    if cache_key not in _COMPILED_FILE_REF_PATTERNS:
+        _COMPILED_FILE_REF_PATTERNS[cache_key] = [re.compile(p) for p in file_ref_patterns]
+
+    compiled = _COMPILED_FILE_REF_PATTERNS[cache_key]
+
     results: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
 
-    # 1. Package-URI style (Flutter stack traces)
-    for m in _PACKAGE_RE.finditer(text):
-        raw_path = m.group(1)
-        # If the path already starts with "lib/", keep it as-is.
-        # Otherwise prepend "lib/".
-        if raw_path.startswith("lib/"):
-            file_path = raw_path
-        else:
-            file_path = "lib/" + raw_path
-        line = int(m.group(2))
-        key = (file_path, line)
-        if key not in seen:
-            seen.add(key)
-            results.append({"file": file_path, "line": line})
-
-    # 2. Direct lib/ references (error messages, comments, etc.)
-    for m in _LIB_RE.finditer(text):
-        file_path = m.group(1)
-        line = int(m.group(2)) if m.group(2) else 0
-        key = (file_path, line)
-        if key not in seen:
-            seen.add(key)
-            results.append({"file": file_path, "line": line})
+    for regex in compiled:
+        for m in regex.finditer(text):
+            raw_path = m.group(1) if m.group(1) else ""
+            if not raw_path:
+                continue
+            line = int(m.group(2)) if m.lastindex and m.lastindex >= 2 and m.group(2) else 0
+            key = (raw_path, line)
+            if key not in seen:
+                seen.add(key)
+                results.append({"file": raw_path, "line": line})
 
     return results
 
@@ -89,16 +75,7 @@ def build_metadata_filter(
     feature: str | None = None,
     filenames: list[str] | None = None,
 ) -> tuple[str, list[Any]]:
-    """Build a SQL WHERE clause fragment for optional metadata filters.
-
-    Args:
-        feature:   If provided, adds ``feature = %s`` to the clause.
-        filenames: If provided, adds ``filename = ANY(%s)`` to the clause.
-
-    Returns:
-        A 2-tuple of (sql_fragment, params_list).  sql_fragment is an empty
-        string when no filters are requested.
-    """
+    """Build a SQL WHERE clause fragment for optional metadata filters."""
     clauses: list[str] = []
     params: list[Any] = []
 
@@ -127,20 +104,7 @@ async def semantic_search(
     feature: str | None = None,
     filenames: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Cosine similarity search against the code_embeddings table.
-
-    Args:
-        pool:         A psycopg ConnectionPool.
-        query_vector: The embedding vector to search with (list of floats).
-        top_k:        Maximum number of results to return.
-        threshold:    Minimum cosine similarity (0–1) to include a result.
-        feature:      Optional feature name filter.
-        filenames:    Optional list of filenames to restrict the search to.
-
-    Returns:
-        List of dicts with keys: filename, location, code, feature, layer,
-        file_type, relevance.
-    """
+    """Cosine similarity search against the code_embeddings table."""
     meta_sql, meta_params = build_metadata_filter(feature=feature, filenames=filenames)
 
     where_clause = "WHERE 1 - (embedding <=> %s::vector) >= %s"
@@ -194,15 +158,7 @@ async def get_chunks_by_filenames(
     pool: Any,
     filenames: list[str],
 ) -> list[dict[str, Any]]:
-    """Retrieve all chunks for the given file paths.
-
-    Args:
-        pool:      A psycopg ConnectionPool.
-        filenames: List of relative file paths (e.g. "lib/core/router/app_router.dart").
-
-    Returns:
-        List of dicts with keys: filename, location, code, feature, layer, file_type.
-    """
+    """Retrieve all chunks for the given file paths."""
     if not filenames:
         return []
 

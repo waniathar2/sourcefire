@@ -1,11 +1,11 @@
-"""Prompt assembly and token budget management for Cravv Observatory."""
+"""Prompt assembly and token budget management for Sourcefire."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-from src.config import MAX_HISTORY_PAIRS, MAX_TOKEN_BUDGET, RESPONSE_HEADROOM
+from sourcefire.config import MAX_HISTORY_PAIRS, MAX_TOKEN_BUDGET, RESPONSE_HEADROOM
 
 # ---------------------------------------------------------------------------
 # System template
@@ -27,22 +27,21 @@ _PRIORITY_ORDER: dict[str, int] = {"direct": 0, "semantic": 1, "graph": 2}
 _MODE_SUFFIXES: dict[str, str] = {
     "debug": (
         "\n\n## Mode: Debug\n"
-        "Focus on diagnosing the root cause. "
-        "Trace the call chain from the error site back to its origin. "
-        "Show the exact files and line regions involved. "
-        "Suggest a minimal, targeted fix."
+        "Diagnose the root cause from the retrieved context first. "
+        "If the stack trace references files not in the context, use tools to read them. "
+        "Trace the call chain. Show exact files and lines. Suggest a minimal fix."
     ),
     "feature": (
         "\n\n## Mode: Feature\n"
-        "Focus on where the new code should live in the feature-first clean architecture. "
-        "Identify the correct layer (data / domain / presentation) and file location. "
-        "Point to similar existing features as implementation references."
+        "Use the retrieved context to identify the project structure and patterns. "
+        "Show where new code should live based on existing conventions you can see. "
+        "If you need to see similar features for reference, use semantic_code_search or find_files_by_name."
     ),
     "explain": (
         "\n\n## Mode: Explain\n"
-        "Focus on clarity. "
-        "Walk through the relevant files in dependency order (data → domain → presentation). "
-        "Use analogies where helpful, but always ground explanations in actual file paths."
+        "Explain from the retrieved context first — it already contains the most relevant code. "
+        "Walk through files in dependency order. "
+        "Only use tools if you need to trace deeper connections not visible in the context."
     ),
 }
 
@@ -52,7 +51,7 @@ _MODE_SUFFIXES: dict[str, str] = {
 
 
 def estimate_tokens(text: str) -> int:
-    """Rough token estimate: 1 token ≈ 4 characters."""
+    """Rough token estimate: 1 token ~ 4 characters."""
     return len(text) // 4
 
 
@@ -67,14 +66,7 @@ def truncate_chunks(
     chunks: list[dict[str, Any]],
     max_tokens: int,
 ) -> list[dict[str, Any]]:
-    """Return a subset of *chunks* that fits within *max_tokens*.
-
-    Strategy:
-    1. Sort by priority (direct < semantic < graph) then descending relevance.
-    2. Truncate any single chunk's code to ``_MAX_CHUNK_CHARS`` before counting.
-    3. Drop chunks (lowest priority / relevance first) until budget is met.
-    """
-    # Sort: primary = priority order, secondary = relevance descending
+    """Return a subset of *chunks* that fits within *max_tokens*."""
     sorted_chunks = sorted(
         chunks,
         key=lambda c: (
@@ -83,7 +75,6 @@ def truncate_chunks(
         ),
     )
 
-    # Truncate individual chunk code to cap per-chunk token cost
     capped: list[dict[str, Any]] = []
     for chunk in sorted_chunks:
         c = dict(chunk)
@@ -91,7 +82,6 @@ def truncate_chunks(
             c["code"] = c["code"][:_MAX_CHUNK_CHARS]
         capped.append(c)
 
-    # Greedy inclusion: keep adding chunks while under budget
     result: list[dict[str, Any]] = []
     used_tokens = 0
     for chunk in capped:
@@ -99,7 +89,6 @@ def truncate_chunks(
         if used_tokens + chunk_tokens <= max_tokens:
             result.append(chunk)
             used_tokens += chunk_tokens
-        # If this chunk doesn't fit, skip it (preserves higher-priority chunks)
 
     return result
 
@@ -117,14 +106,15 @@ def assemble_prompt(
     memory_content: str,
     history: list[dict[str, str]],
     model: str,
+    highlight_language: str = "text",
 ) -> dict[str, Any]:
     """Assemble the full prompt dict for the LLM call.
 
     Returns a dict with keys:
-    - ``system``   — full system prompt (template + claude_md + memory + mode suffix)
+    - ``system``   — full system prompt
     - ``context``  — formatted retrieved code chunks
     - ``query``    — the user's question (unchanged)
-    - ``history``  — trimmed conversation history (≤ MAX_HISTORY_PAIRS pairs)
+    - ``history``  — trimmed conversation history
     - ``stats``    — token usage summary dict
     """
     # 1. Compute available context budget
@@ -150,18 +140,30 @@ def assemble_prompt(
     ]
     system_prompt = "".join(system_parts)
 
-    # 4. Build context block
+    # 4. Build context block — use the detected language for syntax highlighting
     context_parts: list[str] = []
     for chunk in kept_chunks:
         filename = chunk.get("filename", "unknown")
         location = chunk.get("location", "")
         relevance = chunk.get("relevance", 0.0)
         code = chunk.get("code", "")
+
+        # Detect per-file highlight language from extension
+        ext = Path(filename).suffix.lower()
+        _ext_map = {
+            ".py": "python", ".js": "javascript", ".ts": "typescript",
+            ".tsx": "typescript", ".jsx": "javascript", ".dart": "dart",
+            ".go": "go", ".rs": "rust", ".java": "java", ".md": "markdown",
+            ".yaml": "yaml", ".yml": "yaml", ".json": "json", ".html": "html",
+            ".css": "css", ".sh": "bash", ".toml": "toml",
+        }
+        lang = _ext_map.get(ext, highlight_language)
+
         header = f"### {filename}"
         if location:
             header += f" ({location})"
         header += f"  [relevance: {relevance:.2f}]"
-        context_parts.append(f"{header}\n```dart\n{code}\n```")
+        context_parts.append(f"{header}\n```{lang}\n{code}\n```")
 
     context_block = "\n\n".join(context_parts)
 

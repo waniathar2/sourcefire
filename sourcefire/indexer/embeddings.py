@@ -1,7 +1,7 @@
 """Shared embedding module using sentence-transformers directly."""
 
 from sentence_transformers import SentenceTransformer
-from src.config import EMBEDDING_MODEL
+from sourcefire.config import EMBEDDING_MODEL
 
 _model: SentenceTransformer | None = None
 

@@ -1,24 +1,31 @@
 [project]
-name = "tara-rag"
-version = "0.1.0"
-description = "Cravv Observatory — local RAG codebase guide"
+name = "sourcefire"
+version = "0.2.0"
+description = "Sourcefire — AI-powered codebase RAG from your terminal"
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex",
+    "chromadb",
     "langchain",
     "langchain-google-genai",
     "fastapi",
     "uvicorn[standard]",
     "sse-starlette",
-    "psycopg[binary]",
-    "psycopg-pool",
     "sentence-transformers",
     "tree-sitter",
+    "tree-sitter-languages",
     "python-dotenv",
+    "watchfiles",
+    "tomli-w",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[project.scripts]
+sourcefire = "sourcefire.cli:main"
+
+[tool.setuptools.package-data]
+sourcefire = ["static/**/*", "prompts/**/*"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

@@ -1,4 +1,4 @@
-"""Bidirectional import graph for Dart/Flutter source files."""
+"""Bidirectional import graph for source files."""
 
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ class ImportGraph:
     directions so either direction can be queried in O(1).
     """
 
-    # Import schemes that refer to external packages and should not be
-    # resolved as local file paths.
-    _EXTERNAL_SCHEMES: ClassVar[tuple[str, ...]] = ("package:", "dart:")
+    # Default external schemes — overridden at construction time by the profile
+    _external_prefixes: tuple[str, ...] = ()
 
-    def __init__(self) -> None:
+    def __init__(self, external_prefixes: tuple[str, ...] = ()) -> None:
         self._forward: defaultdict[str, set[str]] = defaultdict(set)
         self._reverse: defaultdict[str, set[str]] = defaultdict(set)
+        self._external_prefixes = external_prefixes
 
     # ------------------------------------------------------------------
     # Mutation
@@ -84,23 +84,23 @@ class ImportGraph:
         cls,
         file_imports: dict[str, list[str]],
         base_dir: str = "",
+        external_prefixes: tuple[str, ...] = (),
     ) -> "ImportGraph":
         """Build an ImportGraph from a mapping of ``{file: [import_strings]}``.
 
-        - ``package:`` and ``dart:`` imports are skipped (external).
-        - Relative imports (``../foo.dart``, ``./bar.dart``) are resolved
-          relative to the importing file's directory.
+        - Imports starting with any prefix in *external_prefixes* are skipped.
+        - Relative imports (``../foo``, ``./bar``) are resolved relative to
+          the importing file's directory.
 
         Args:
             file_imports: Mapping from source file path to its raw import list.
-            base_dir: Optional prefix that was stripped from file paths when
-                the metadata was collected.  Not currently used for path
-                arithmetic but kept for forward-compatibility.
+            base_dir: Optional prefix (unused, kept for forward-compatibility).
+            external_prefixes: Prefixes that indicate external packages.
         """
-        graph = cls()
+        graph = cls(external_prefixes=external_prefixes)
         for source_file, imports in file_imports.items():
             for raw_import in imports:
-                if any(raw_import.startswith(scheme) for scheme in cls._EXTERNAL_SCHEMES):
+                if external_prefixes and any(raw_import.startswith(scheme) for scheme in external_prefixes):
                     continue
                 resolved = cls._resolve_import(source_file, raw_import)
                 graph.add_edge(source_file, resolved)
@@ -108,16 +108,7 @@ class ImportGraph:
 
     @staticmethod
     def _resolve_import(source_file: str, relative_import: str) -> str:
-        """Resolve *relative_import* relative to *source_file*'s directory.
-
-        Uses ``pathlib.PurePosixPath`` so the logic is platform-independent.
-
-        Examples::
-
-            _resolve_import("lib/a.dart", "../b.dart")  # -> "lib/b.dart"
-            _resolve_import("lib/sub/a.dart", "./c.dart")  # -> "lib/sub/c.dart"
-        """
+        """Resolve *relative_import* relative to *source_file*'s directory."""
         source_dir = str(PurePosixPath(source_file).parent)
         joined = posixpath.join(source_dir, relative_import)
-        # posixpath.normpath collapses ".." and "." segments correctly.
         return posixpath.normpath(joined)

@@ -1,4 +1,4 @@
-"""FastAPI router for the Cravv Observatory API."""
+"""FastAPI router for the Sourcefire API."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from typing import Any, AsyncGenerator
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
-from src.api.models import QueryRequest, SourceResponse, StatusResponse
-from src.config import CODEBASE_PATH, GEMINI_API_KEY
+from sourcefire.api.models import QueryRequest, SourceResponse, StatusResponse
+from sourcefire.config import CODEBASE_PATH, GEMINI_API_KEY
 
 router = APIRouter(prefix="/api")
 
@@ -20,19 +20,22 @@ router = APIRouter(prefix="/api")
 
 _pool: Any = None
 _graph: Any = None
+_profile: Any = None
 _index_status: dict[str, Any] = {
     "files_indexed": 0,
     "last_indexed": "never",
     "index_status": "not_ready",
+    "language": "generic",
 }
 
 
-def init_dependencies(pool: Any, graph: Any, index_status: dict[str, Any]) -> None:
+def init_dependencies(pool: Any, graph: Any, index_status: dict[str, Any], profile: Any = None) -> None:
     """Inject shared dependencies from the application lifespan."""
-    global _pool, _graph, _index_status
+    global _pool, _graph, _index_status, _profile
     _pool = pool
     _graph = graph
     _index_status = index_status
+    _profile = profile
 
 
 # ---------------------------------------------------------------------------
@@ -47,14 +50,39 @@ _EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".yml": "yaml",
     ".json": "json",
     ".ts": "typescript",
+    ".tsx": "typescript",
     ".js": "javascript",
+    ".jsx": "javascript",
     ".html": "html",
     ".css": "css",
     ".sh": "bash",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".kt": "kotlin",
+    ".swift": "swift",
+    ".rb": "ruby",
+    ".php": "php",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".toml": "toml",
+    ".xml": "xml",
+    ".sql": "sql",
+    ".graphql": "graphql",
+    ".proto": "protobuf",
+    ".tf": "hcl",
+    ".dockerfile": "dockerfile",
 }
 
 
 def _detect_language(file_path: Path) -> str:
+    name = file_path.name.lower()
+    if name == "dockerfile":
+        return "dockerfile"
+    if name == "makefile":
+        return "makefile"
     return _EXTENSION_TO_LANGUAGE.get(file_path.suffix.lower(), "plaintext")
 
 
@@ -72,7 +100,7 @@ async def query(request: QueryRequest) -> EventSourceResponse:
             detail="GEMINI_API_KEY is not configured. Set it in your .env file.",
         )
 
-    from src.chain.rag_chain import stream_rag_response
+    from sourcefire.chain.rag_chain import stream_rag_response
 
     async def _event_generator() -> AsyncGenerator[dict[str, str], None]:
         async for chunk in stream_rag_response(
@@ -82,6 +110,7 @@ async def query(request: QueryRequest) -> EventSourceResponse:
             mode=request.mode,
             model=request.model,
             history=request.history,
+            profile=_profile,
         ):
             yield {"data": json.dumps(chunk)}
 
@@ -90,11 +119,7 @@ async def query(request: QueryRequest) -> EventSourceResponse:
 
 @router.get("/sources", response_model=SourceResponse)
 async def sources(path: str = Query(..., description="Relative path within the codebase")) -> SourceResponse:
-    """Return the content and detected language of a source file.
-
-    Path traversal is prevented by resolving the full path and verifying it
-    starts with the resolved CODEBASE_PATH.
-    """
+    """Return the content and detected language of a source file."""
     codebase_resolved = CODEBASE_PATH.resolve()
     full_path = (CODEBASE_PATH / path).resolve()
 
@@ -122,4 +147,5 @@ async def status() -> StatusResponse:
         files_indexed=_index_status.get("files_indexed", 0),
         last_indexed=str(_index_status.get("last_indexed", "never")),
         index_status=str(_index_status.get("index_status", "not_ready")),
+        language=str(_index_status.get("language", "generic")),
     )
