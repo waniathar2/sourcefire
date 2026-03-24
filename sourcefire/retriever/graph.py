@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import posixpath
 from collections import defaultdict, deque
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import ClassVar
 
 
@@ -112,3 +113,50 @@ class ImportGraph:
         source_dir = str(PurePosixPath(source_file).parent)
         joined = posixpath.join(source_dir, relative_import)
         return posixpath.normpath(joined)
+
+    # ------------------------------------------------------------------
+    # File removal (for incremental re-index)
+    # ------------------------------------------------------------------
+
+    def remove_file(self, file_path: str) -> None:
+        """Remove all edges involving *file_path*."""
+        if file_path in self._forward:
+            for target in self._forward[file_path]:
+                self._reverse[target].discard(file_path)
+            del self._forward[file_path]
+        if file_path in self._reverse:
+            for source in self._reverse[file_path]:
+                self._forward[source].discard(file_path)
+            del self._reverse[file_path]
+
+    # ------------------------------------------------------------------
+    # JSON persistence
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize to a dict for JSON storage."""
+        edges = []
+        for source, targets in self._forward.items():
+            for target in targets:
+                edges.append({"source": source, "target": target})
+        return {"edges": edges}
+
+    @classmethod
+    def from_dict(cls, data: dict, external_prefixes: tuple[str, ...] = ()) -> "ImportGraph":
+        """Deserialize from a dict."""
+        graph = cls(external_prefixes=external_prefixes)
+        for edge in data.get("edges", []):
+            graph.add_edge(edge["source"], edge["target"])
+        return graph
+
+    def save(self, path: Path) -> None:
+        """Save graph to a JSON file."""
+        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+
+    @classmethod
+    def load(cls, path: Path, external_prefixes: tuple[str, ...] = ()) -> "ImportGraph":
+        """Load graph from a JSON file."""
+        if not path.is_file():
+            return cls(external_prefixes=external_prefixes)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return cls.from_dict(data, external_prefixes=external_prefixes)
