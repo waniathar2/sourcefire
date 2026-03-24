@@ -54,12 +54,14 @@ def discover_project() -> tuple[Path, Path]:
 
     current = Path.cwd().resolve()
     while True:
+        # Stop BEFORE checking — never use home or root as project
+        if current in stop_dirs:
+            break
         candidate = current / ".sourcefire"
-        # Only accept if it has a config.toml (project-level, not stale/global)
         if candidate.is_dir() and (candidate / "config.toml").is_file():
             return current, candidate
         parent = current.parent
-        if parent == current or current in stop_dirs:
+        if parent == current:
             break
         current = parent
 
