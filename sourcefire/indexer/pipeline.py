@@ -207,7 +207,10 @@ def run_indexing(
               re-index changed/new files, delete removed files.
 
     Returns:
-        A stats dict with keys: files, chunks, edges, language, import_edges.
+        A stats dict with keys: files, chunks, edges, language, import_edges, collection.
+        The ``collection`` key holds the (possibly new) ChromaDB collection — callers
+        MUST use this instead of their original reference, because full re-index
+        deletes and recreates the collection.
     """
     codebase_path = config.project_dir
     print(f"[pipeline] Scanning codebase at: {codebase_path}")
@@ -226,7 +229,7 @@ def run_indexing(
         print("Run `sourcefire --reinit` to regenerate patterns, or edit .sourcefire/config.toml manually.")
         return {
             "files": 0, "chunks": 0, "edges": 0,
-            "language": lang_name, "import_edges": {},
+            "language": lang_name, "import_edges": {}, "collection": collection,
         }
 
     # Determine which files to process
@@ -342,6 +345,7 @@ def run_indexing(
         "edges": edge_count,
         "language": lang_name,
         "import_edges": file_imports,
+        "collection": collection,
     }
 
 

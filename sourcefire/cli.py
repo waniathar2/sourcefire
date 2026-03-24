@@ -174,6 +174,9 @@ async def lifespan(app: FastAPI):
         print("[sourcefire] Checking for changes...")
         stats = run_indexing(collection, config, client=client, full=False)
 
+    # Use the collection returned by indexing (may be new after reset)
+    collection = stats["collection"]
+
     print(f"[sourcefire] Indexed: {stats['files']} files, {stats['chunks']} chunks")
 
     # Build import graph
