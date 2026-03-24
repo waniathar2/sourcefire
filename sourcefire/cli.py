@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import fcntl
 import os
+import socket
 import sys
 import webbrowser
 from contextlib import asynccontextmanager
@@ -71,6 +72,25 @@ def release_lock(fd: int, lock_path: Path) -> None:
         os.close(fd)
     except OSError:
         pass
+
+
+def _port_available(host: str, port: int) -> bool:
+    """Check if a port is available."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def find_available_port(host: str, preferred: int, max_attempts: int = 20) -> int:
+    """Find an available port, starting from preferred and incrementing."""
+    for offset in range(max_attempts):
+        port = preferred + offset
+        if _port_available(host, port):
+            return port
+    raise RuntimeError(f"No available port found in range {preferred}-{preferred + max_attempts - 1}")
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +287,18 @@ def main() -> None:
     # Override port from CLI
     if args.port:
         config.port = args.port
+
+    # Find available port (auto-increment if taken)
+    try:
+        actual_port = find_available_port(config.host, config.port)
+    except RuntimeError:
+        print(f"Error: No available port found starting from {config.port}.")
+        release_lock(lock_fd, sourcefire_dir / ".lock")
+        sys.exit(1)
+
+    if actual_port != config.port:
+        print(f"Port {config.port} is in use, using {actual_port} instead.")
+    config.port = actual_port
 
     # Store state for lifespan access
     _app_state["config"] = config
