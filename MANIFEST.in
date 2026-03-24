@@ -1,0 +1,4 @@
+recursive-include sourcefire/static *
+recursive-include sourcefire/prompts *
+include LICENSE
+include README.md

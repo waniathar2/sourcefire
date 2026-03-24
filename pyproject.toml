@@ -1,8 +1,29 @@
 [project]
 name = "sourcefire"
 version = "0.2.0"
-description = "Sourcefire — AI-powered codebase RAG from your terminal"
+description = "AI-powered codebase RAG from your terminal — index any project, ask questions, get answers with full source context."
+readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.11"
+authors = [
+    {name = "Athar Wani", email = "athar@cravv.com"},
+]
+keywords = ["rag", "codebase", "ai", "code-search", "embeddings", "chromadb", "gemini"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Indexing",
+]
 dependencies = [
     "chromadb",
     "langchain",
@@ -20,11 +41,19 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "httpx"]
 
+[project.urls]
+Homepage = "https://github.com/waniathar2/sourcefire"
+Repository = "https://github.com/waniathar2/sourcefire"
+Issues = "https://github.com/waniathar2/sourcefire/issues"
+
 [project.scripts]
 sourcefire = "sourcefire.cli:main"
 
 [tool.setuptools.package-data]
 sourcefire = ["static/**/*", "prompts/**/*"]
+
+[tool.setuptools.packages.find]
+include = ["sourcefire*"]
 
 [build-system]
 requires = ["setuptools>=68.0"]
