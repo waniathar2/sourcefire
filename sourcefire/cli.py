@@ -153,7 +153,15 @@ async def lifespan(app: FastAPI):
     collection = get_collection(client)
 
     # Determine if this is a first run (empty collection)
-    existing_count = collection.count()
+    try:
+        existing_count = collection.count()
+    except Exception:
+        # Corrupted or stale ChromaDB — reset
+        print("[sourcefire] ChromaDB state is corrupted — resetting...")
+        from sourcefire.db import reset_collection
+        collection = reset_collection(client)
+        existing_count = 0
+
     is_first_run = existing_count == 0
 
     # Run indexing
