@@ -1,7 +1,7 @@
 [project]
 name = "sourcefire"
 version = "0.2.0"
-description = "AI-powered codebase RAG from your terminal — index any project, ask questions, get answers with full source context."
+description = "Get instant context on any codebase. One command to index, ask questions in plain English, get answers grounded in actual code."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
