@@ -7,3 +7,6 @@ dist/
 build/
 .pytest_cache/
 .worktrees/
+.sourcefire/chroma/
+.sourcefire/graph.json
+.sourcefire/.lock
